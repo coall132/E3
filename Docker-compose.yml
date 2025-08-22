@@ -1,0 +1,43 @@
+services:
+  postgres:
+      image: postgres:15
+      container_name: postgres_api
+      ports:
+        - "5434:5434"
+      volumes:
+        - pg_data:/var/lib/postgresql/data
+      environment:
+        - POSTGRES_USER=${POSTGRES_USER}
+        - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+        - POSTGRES_DB=${POSTGRES_DB}
+      networks:
+        - data_network
+      restart: always
+      healthcheck:
+        test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+        interval: 5s
+        timeout: 5s
+        retries: 5
+
+  api:
+    build:
+      context: ./api 
+    container_name: api_ia
+    ports:
+      - "8001:8001"  
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+      - POSTGRES_HOST=postgres_api
+    depends_on:
+      - postgres
+    networks:
+      - data_network
+
+networks:
+  data_network:
+    driver: bridge
+
+volumes:
+  pg_data:
