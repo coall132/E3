@@ -33,8 +33,6 @@ def engine(pg_container):
     models.Base.metadata.create_all(bind=eng)
 
     yield eng
-
-    # Teardown (la DB disparaît de toute façon avec le conteneur)
     try:
         models.Base.metadata.drop_all(bind=eng)
     except Exception:

@@ -6,10 +6,10 @@ from typing import List, Optional
 import os, time
 from datetime import timedelta, datetime, timezone
 
-import CRUD
-import models
-import schema
-from database import engine, get_db
+from . import CRUD
+from . import models
+from . import schema
+from .database import engine, get_db
 
 app = FastAPI(
     title="API Reco Restaurant",
