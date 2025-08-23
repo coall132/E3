@@ -4,9 +4,9 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from testcontainers.postgres import PostgresContainer
 from fastapi.testclient import TestClient
-import models               
-from database import get_db
-from main import app
+from API import models               
+from API import database
+from API import app 
 
 def table_etab(engine):
     with engine.begin() as conn:
@@ -56,12 +56,12 @@ def client(db_session, monkeypatch):
     monkeypatch.setenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15")
     monkeypatch.setenv("API_STATIC_KEY", "coall")
 
-    def _override_get_db():
+    def override_get_db():
         try:
             yield db_session
         finally:
             pass
-    app.dependency_overrides[get_db] = _override_get_db
+    app.dependency_overrides[database.get_db] = override_get_db
 
     with TestClient(app) as c:
         yield c
