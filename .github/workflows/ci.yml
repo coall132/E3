@@ -32,4 +32,4 @@ jobs:
 
       - name: Run tests
         run: |
-          pytest -q  test/test_db.py test/test_auth.py
+          pytest -q  API/tests/test_db.py API/tests/test_auth.py
