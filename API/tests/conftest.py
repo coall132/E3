@@ -7,15 +7,16 @@ from fastapi.testclient import TestClient
 from API import models               
 from API import database
 from API.main import app 
+from sqlalchemy import Table, Column, Integer, Text
 
-def table_etab(engine):
-    with engine.begin() as conn:
-        conn.execute(text("""
-            CREATE TABLE IF NOT EXISTS etab (
-                id_etab SERIAL PRIMARY KEY,
-                nom TEXT
-            );
-        """))
+def table_etab():
+    Table("etab",
+        models.Base.metadata,
+        Column("id_etab", Integer, primary_key=True),
+        Column("nom", Text),
+        schema="public",       
+        extend_existing=True,
+    )
 
 @pytest.fixture(scope="session")
 def pg_container():
@@ -25,18 +26,15 @@ def pg_container():
 
 @pytest.fixture(scope="session")
 def engine(pg_container):
-    url = pg_container.get_connection_url().replace("postgresql://", "postgresql+psycopg2://")
+    url = pg_container.get_connection_url().replace(
+        "postgresql://", "postgresql+psycopg2://"
+    )
     eng = create_engine(url, pool_pre_ping=True)
-
-    table_etab(eng)
-
+    models.ensure_ml_schema(eng)
+    table_etab()
     models.Base.metadata.create_all(bind=eng)
 
     yield eng
-    try:
-        models.Base.metadata.drop_all(bind=eng)
-    except Exception:
-        pass
 
 @pytest.fixture()
 def db_session(engine):

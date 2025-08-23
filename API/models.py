@@ -81,7 +81,7 @@ class ApiKey(Base):
     )
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(Integer, ForeignKey("user.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("user_base.user.id", ondelete="CASCADE"), nullable=False)
     key_id = Column(String(32), nullable=False, index=True)
     key_hash = Column(Text, nullable=False)       
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
