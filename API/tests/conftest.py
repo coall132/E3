@@ -13,8 +13,7 @@ def table_etab():
     Table("etab",
         models.Base.metadata,
         Column("id_etab", Integer, primary_key=True),
-        Column("nom", Text),
-        schema="public",       
+        Column("nom", Text),    
         extend_existing=True,
     )
 
