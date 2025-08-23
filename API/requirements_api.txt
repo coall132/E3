@@ -4,3 +4,7 @@ uvicorn[standard]
 psycopg2-binary
 sqlalchemy
 python-jose[cryptography]
+argon2-cffi==23.1.0
+pytest
+testcontainers[postgres]
+

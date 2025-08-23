@@ -5,6 +5,7 @@ WORKDIR /app
 
 # 3. Copier le fichier des dépendances et les installer
 COPY requirements_api.txt requirements_api.txt
+RUN pip install --upgrade pip
 RUN pip install --no-cache-dir -r requirements_api.txt
 
 # 4. Copier tout le code de l'API dans le conteneur

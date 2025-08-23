@@ -9,6 +9,16 @@ class TokenOut(BaseModel):
     token_type: str = "bearer"
     expires_at: int
 
+class ApiKeyCreate(BaseModel):
+    email: str
+    username: str = Field(min_length=3, max_length=50)
+
+class ApiKeyResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    api_key: str                 
+    key_id: str              
+
+
 class Form(BaseModel):
     price_level:Optional[int]
     city:Optional[str]
