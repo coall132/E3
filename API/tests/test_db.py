@@ -6,7 +6,7 @@ from testcontainers.postgres import PostgresContainer
 from fastapi.testclient import TestClient
 from API import models               
 from API import database
-from API import app 
+from API.main import app 
 
 def table_etab(engine):
     with engine.begin() as conn:
