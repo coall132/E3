@@ -51,7 +51,7 @@ def create_api_key(API_key_in: schema.ApiKeyCreate,password:str, db: Session = D
     api_key_plain, key_id, _secret = CRUD.generate_api_key()
     key_hash = CRUD.hash_api_key(api_key_plain)
 
-    row = models.ApiKey(user_id=user.id,key_id=key_id,key_hash=key_hash.name or None)
+    row = models.ApiKey(user_id=user.id,key_id=key_id,key_hash=key_hash or None)
     db.add(row)
     db.commit()
     return schema.ApiKeyResponse(api_key=api_key_plain, key_id=key_id)
