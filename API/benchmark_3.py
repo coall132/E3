@@ -21,6 +21,8 @@ from sklearn.preprocessing import StandardScaler
 from sklearn.neural_network import MLPRegressor
 from sklearn.decomposition import PCA
 
+model = SentenceTransformer('BAAI/bge-m3')
+
 def fget(form, key, default=None):
     """Accès robuste à un champ de form (dict, pandas Series, namedtuple...)."""
     if isinstance(form, dict):
@@ -114,35 +116,6 @@ class EmbedWrapper(BaseEstimator, TransformerMixin):
             return np.zeros((len(Xdf), 0), dtype=np.float32)
         return np.hstack(mats)
 
-
-BOOL_COLS = [
-    'allowsDogs','delivery','goodForChildren','goodForGroups','goodForWatchingSports',
-    'outdoorSeating','reservable','restroom','servesVegetarianFood','servesBrunch',
-    'servesBreakfast','servesDinner','servesLunch'
-]
-NUM_COLS = ['rating','start_price','end_price','mean_review_rating']         
-TEXT_COLS = ['editorialSummary_text','review_list']
-lev="priceLevel"
-
-num_pipe = Pipeline(steps=[
-    ('impute', SimpleImputer(strategy='constant', fill_value=0)),
-    ('scale', StandardScaler())
-])
-bool_pipe = Pipeline(steps=[
-    ('impute', SimpleImputer(strategy='most_frequent')),
-    ('onehot', OneHotEncoder(drop='if_binary', handle_unknown='ignore', sparse_output=True))
-])
-lev_pipe = Pipeline(steps=[
-    ('impute', SimpleImputer(strategy='constant', fill_value=0)),
-    ('scale', StandardScaler())
-])
-text_pipe = Pipeline(steps=[
-    ("emb", EmbedWrapper(mode="mean"))
-])
-
-preproc = ColumnTransformer(
-    transformers=[("text_reviews",text_pipe,[c for c in TEXT_COLS if c in df.columns]),("num",num_pipe,[c for c in NUM_COLS if c in df.columns]),
-    ("bool",bool_pipe,[c for c in BOOL_COLS if c in df.columns]),("lev",lev_pipe,[lev])],remainder="drop",)
 
 def _norm_txt(x):
     x = unicodedata.normalize("NFKD", str(x))
@@ -846,6 +819,7 @@ def plot_scatter(summary_df, x_metric, y_metric, out_path):
     plt.tight_layout()
     plt.savefig(out_path, dpi=120)
     plt.close()
+
 
 def make_unsup_view(Xq, keep_cos=True, D_diff=None):
     """
