@@ -16,6 +16,7 @@ def table_etab():
         Column("nom", Text),    
         extend_existing=True,
     )
+    
 
 @pytest.fixture(scope="session")
 def pg_container():

@@ -23,6 +23,16 @@ from sklearn.decomposition import PCA
 
 model = SentenceTransformer('BAAI/bge-m3')
 
+BOOL_COLS = [
+    'allowsDogs','delivery','goodForChildren','goodForGroups','goodForWatchingSports',
+    'outdoorSeating','reservable','restroom','servesVegetarianFood','servesBrunch',
+    'servesBreakfast','servesDinner','servesLunch'
+]
+NUM_COLS = ['rating','start_price','end_price','mean_review_rating']         
+TEXT_COLS = ['editorialSummary_text','review_list']
+LEV_COL=["priceLevel"]
+
+
 def fget(form, key, default=None):
     """Accès robuste à un champ de form (dict, pandas Series, namedtuple...)."""
     if isinstance(form, dict):
@@ -116,7 +126,37 @@ class EmbedWrapper(BaseEstimator, TransformerMixin):
             return np.zeros((len(Xdf), 0), dtype=np.float32)
         return np.hstack(mats)
 
+def pick(cols):
+    def _pick(X):
+        cols_in_X = getattr(X, "columns", [])
+        return [c for c in cols if c in cols_in_X]
+    return _pick
 
+num_pipe = Pipeline(steps=[
+    ('impute', SimpleImputer(strategy='constant', fill_value=0)),
+    ('scale', StandardScaler())
+])
+bool_pipe = Pipeline(steps=[
+    ('impute', SimpleImputer(strategy='most_frequent')),
+    ('onehot', OneHotEncoder(drop='if_binary', handle_unknown='ignore', sparse_output=True))
+])
+lev_pipe = Pipeline(steps=[
+    ('impute', SimpleImputer(strategy='constant', fill_value=0)),
+    ('scale', StandardScaler())
+])
+text_pipe = Pipeline(steps=[
+    ("emb", EmbedWrapper(mode="mean"))
+])
+
+preproc = ColumnTransformer(
+    transformers=[
+        ("text_reviews",text_pipe,pick(TEXT_COLS)),
+        ("num",num_pipe,pick(NUM_COLS)),
+        ("bool",bool_pipe,pick(BOOL_COLS)),
+        ("lev",lev_pipe,pick(LEV_COL)),
+    ],
+    remainder="drop",
+)
 def _norm_txt(x):
     x = unicodedata.normalize("NFKD", str(x))
     x = "".join(c for c in x if not unicodedata.combining(c))
