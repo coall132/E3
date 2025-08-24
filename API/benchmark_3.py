@@ -16,8 +16,10 @@ from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassif
 from sklearn.svm import LinearSVC
 from sklearn.model_selection import train_test_split
 
-df = pd.read_csv("./df_final_list_non_emb.csv")
-model = SentenceTransformer('BAAI/bge-m3')
+from sklearn.cluster import MiniBatchKMeans
+from sklearn.preprocessing import StandardScaler
+from sklearn.neural_network import MLPRegressor
+from sklearn.decomposition import PCA
 
 def fget(form, key, default=None):
     """Accès robuste à un champ de form (dict, pandas Series, namedtuple...)."""
@@ -845,11 +847,6 @@ def plot_scatter(summary_df, x_metric, y_metric, out_path):
     plt.savefig(out_path, dpi=120)
     plt.close()
 
-from sklearn.cluster import MiniBatchKMeans
-from sklearn.preprocessing import StandardScaler
-from sklearn.neural_network import MLPRegressor
-from sklearn.decomposition import PCA
-
 def make_unsup_view(Xq, keep_cos=True, D_diff=None):
     """
     Extrait une vue non-supervisée de Xq = [H_block | diff | cos].
@@ -945,105 +942,3 @@ class AutoencoderRanker:
         err = np.mean((Xp - Xh)**2, axis=1)
         return -err if self.mode == 'typical' else err
     
-
-
-print('Using W_proxy (train):', W_proxy)
-SENT_MODEL = model
-"""
-forms = forms_from_csv("forms_restaurants_dept37_single_cp.csv", df)
-forms_tr, forms_te = train_test_split(forms, test_size=0.25, random_state=123)
-
-X_items = preproc.fit_transform(df)
-if hasattr(X_items, "toarray"):
-    X_items = X_items.toarray().astype(np.float32)
-else:
-    X_items = np.asarray(X_items, dtype=np.float32)
-
-Xtr, ytr, swtr, _ = build_pointwise(forms_tr, preproc, df, X_items, SENT_MODEL)
-Xte, yte, swte, qte = build_pointwise(forms_te, preproc, df, X_items, SENT_MODEL)
-
-Xp, yp, wp = build_pairwise(
-    forms_tr, preproc, df, X_items, SENT_MODEL,
-    W=W_eval,           # ou W=W_proxy si tu veux coller au proxy
-    top_m=10, bot_m=10  # ajuste selon la taille
-)
-
-Xp2 = np.vstack([Xp, -Xp])                           # x_pos - x_neg  et  x_neg - x_pos
-yp2 = np.concatenate([np.ones(len(Xp)), np.zeros(len(Xp))])
-wp2 = np.concatenate([wp, wp])   
-
-from sklearn.pipeline import make_pipeline
-
-pair_svm = make_pipeline(
-    StandardScaler(),
-    LinearSVC(C=1.0, random_state=42)
-)
-pair_svm.fit(Xp2, yp2, linearsvc__sample_weight=wp2)
-
-# Régression logistique (pairwise)
-pair_lr = make_pipeline(
-    StandardScaler(),
-    LogisticRegression(
-        penalty="l2", solver="liblinear", max_iter=500, random_state=42
-    )
-)
-pair_lr.fit(Xp2, yp2, logisticregression__sample_weight=wp2)
-
-
-# 3) Modèles pointwise
-mdl_lr  = LogisticRegression(max_iter=2000)
-mdl_rf  = RandomForestClassifier(n_estimators=400, random_state=42, n_jobs=-1)
-mdl_hgb = HistGradientBoostingClassifier(random_state=42)
-mdl_svm = LinearSVC(random_state=42)
-mdl_km = KMeansRanker(n_clusters=32, pca_dim=32, weight_by_size=True).fit(Xtr)
-mdl_ae_typ = AutoencoderRanker(hidden=64, pca_dim=32, mode='typical').fit(Xtr)
-mdl_ae_nov = AutoencoderRanker(hidden=64, pca_dim=32, mode='novel').fit(Xtr)
-
-mdl_lr.fit(Xtr, ytr, sample_weight=swtr)
-mdl_rf.fit(Xtr, ytr, sample_weight=swtr)
-mdl_hgb.fit(Xtr, ytr, sample_weight=swtr)
-mdl_svm.fit(Xtr, ytr)  # pas de sample_weight
-
-
-
-models = {
-    "LogReg": mdl_lr,
-    "RandomForest": mdl_rf,
-    "HistGB": mdl_hgb,
-    "LinearSVC": mdl_svm,
-    "KMeans": mdl_km,
-    "AE_typ": mdl_ae_typ,
-    "AE_nov": mdl_ae_nov,
-    "PairSVM": pair_svm,
-    "PairLogReg": pair_lr
-}
-# 4) Éval ranking sur formulaires test
-res = eval_on_forms(forms_te, preproc, df, X_items, SENT_MODEL, models, k=5)
-print(res)
-
-summary, per_query = eval_benchmark(
-    forms_te, preproc, df, X_items, SENT_MODEL, models,
-    k=5, tau_q=0.85, use_top_m=None, jitter=1e-6, n_boot=300
-)
-print("\n=== Résumé (moyennes + IC95) ===")
-print(summary)
-
-# Sauvegardes
-summary.to_csv("benchmark_summary.csv", index=True)
-per_query.to_csv("benchmark_per_query.csv", index=False)
-
-# Graphiques
-plot_metric_bars(summary, "NDCG@5", "plot_ndcg5.png")
-plot_metric_bars(summary, "P@5", "plot_p@5.png")
-plot_metric_bars(summary, "R@5", "plot_r@5.png")
-plot_scatter(summary, "P@5", "NDCG@5", "plot_scatter_p_vs_ndcg.png")
-
-print("\nFichiers générés :")
-print("- benchmark_summary.csv")
-print("- benchmark_per_query.csv")
-print("- plot_ndcg5.png")
-print("- plot_p@5.png")
-print("- plot_r@5.png")
-print("- plot_scatter_p_vs_ndcg.png")
-"""
-print(df.columns)
