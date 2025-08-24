@@ -7,7 +7,24 @@ from typing import List, Optional
 import os
 from fastapi import FastAPI, Depends, HTTPException, Security, status, Query
 from argon2 import PasswordHasher, exceptions as argon_exc
-from . import models
+from pathlib import Path
+import joblib
+import numpy as np
+import pandas as pd
+try:
+    from . import models
+    from . import database
+    from . import schema
+    from . import benchmark_3 as bm
+    from . import utils
+    from .main import app
+except:
+    import models
+    import database as db
+    import schema
+    import benchmark_3 as bm
+    import utils
+    from main import app
 
 api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)  # pour /auth/token uniquement
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
@@ -70,3 +87,84 @@ def verify_api_key(db: Session, API_key_in: str):
     db.add(row); db.commit()
 
     return row
+
+def load_ML():
+    state = schema.MLState()
+    state.preproc = getattr(bm, "preproc", None)
+    state.preproc_factory = (
+        getattr(bm, "build_preproc", None) or
+        getattr(bm, "make_preproc", None)
+        )
+    state.sent_model = getattr(bm, "model", None)
+    if not (state.preproc or state.preproc_factory):
+            raise RuntimeError("Aucun préprocesseur trouvé dans benchmark_3 (preproc ou build_preproc).")
+    path = os.getenv("RANK_MODEL_PATH", str(Path("artifacts") / "linear_svc_pointwise.joblib"))
+    state.rank_model_path = path
+    skip_rank = os.getenv("SKIP_RANK_MODEL", "0") == "1"
+    if not skip_rank and Path(path).exists():
+        try:
+            state.rank_model = joblib.load(path)
+            print(f"[ml] Rank model chargé: {path}")
+        except Exception as e:
+            raise RuntimeError(f"Impossible de charger le modèle: {path} ({e})") from e
+    else:
+        print(f"[ml] Rank model ignoré (fichier absent ou SKIP_RANK_MODEL=1): {path}")
+    return state
+
+def load_df():
+    df_etab = db.extract_table(db.engine,"etab")
+    df_options =db.extract_table(db.engine,"options")
+    df_embed = db.extract_table(db.engine,"etab_embedding")
+    df_horaire = db.extract_table(db.engine,"opening_period")
+
+    etab_features = df_etab[['id_etab', 'rating', 'priceLevel', 'latitude', 'longitude','adresse',"editorialSummary_text","start_price"]].copy()
+    price_mapping = {
+        'PRICE_LEVEL_INEXPENSIVE': 1, 'PRICE_LEVEL_MODERATE': 2,
+        'PRICE_LEVEL_EXPENSIVE': 3, 'PRICE_LEVEL_VERY_EXPENSIVE': 4
+    }
+    etab_features['priceLevel'] = etab_features['priceLevel'].map(price_mapping)
+    etab_features['priceLevel'] = etab_features.apply(utils.determine_price_level,axis=1)
+
+    distribution = etab_features['priceLevel'].value_counts(normalize=True)
+    niveaux_existants = distribution.index
+    probabilites = distribution.values
+    nb_nan_a_remplacer = etab_features['priceLevel'].isnull().sum()
+    valeurs_aleatoires = np.random.choice(a=niveaux_existants,size=nb_nan_a_remplacer,p=probabilites)
+    etab_features.loc[etab_features['priceLevel'].isnull(), 'priceLevel'] = valeurs_aleatoires
+
+    etab_features['code_postal'] = etab_features['adresse'].str.extract(r'(\b\d{5}\b)', expand=False)
+    etab_features['code_postal'].fillna(etab_features['code_postal'].mode()[0], inplace=True)
+    etab_features.drop("adresse",axis=1,inplace=True)
+    etab_features['rating'].fillna(etab_features['rating'].mean(), inplace=True)
+    etab_features['start_price'].fillna(0, inplace=True)
+
+    options_features = df_options.copy()
+
+    options_features['allowsDogs'].fillna(False, inplace=True)
+    options_features['delivery'].fillna(False, inplace=True)
+    options_features['goodForChildren'].fillna(False, inplace=True)
+    options_features['goodForGroups'].fillna(False, inplace=True)
+    options_features['goodForWatchingSports'].fillna(False, inplace=True)
+    options_features['outdoorSeating'].fillna(False, inplace=True)
+    options_features['reservable'].fillna(False, inplace=True)
+    options_features['restroom'].fillna(True, inplace=True)
+    options_features['servesVegetarianFood'].fillna(False, inplace=True)
+    options_features['servesBrunch'].fillna(False, inplace=True)
+    options_features['servesBreakfast'].fillna(False, inplace=True)
+    options_features['servesDinner'].fillna(False, inplace=True)
+    options_features['servesLunch'].fillna(False, inplace=True)
+    horaire_features=df_horaire.copy()
+
+    horaire_features.dropna(subset=['close_hour', 'close_day'], inplace=True)
+    for col in ['open_day', 'open_hour', 'close_day', 'close_hour']:
+        horaire_features[col] = horaire_features[col].astype(int)
+
+    jours = {0: "dimanche", 1: "lundi", 2: "mardi", 3: "mercredi", 4: "jeudi", 5: "vendredi", 6: "samedi"}
+    creneaux = {"matin": (8, 11), "midi": (11, 14), "apres_midi": (14, 19), "soir": (19, 23)}
+
+    horaire_features = df_etab.apply(utils.calculer_profil_ouverture,axis=1,df_horaires=horaire_features,jours=jours,creneaux=creneaux)
+
+    df_final=pd.merge(etab_features,options_features,on="id_etab",how='left')
+    df_final=pd.merge(df_final,horaire_features,on="id_etab",how='left')
+    df_final_embed=pd.merge(df_final,df_embed,on="id_etab",how='left')
+    return df_final_embed

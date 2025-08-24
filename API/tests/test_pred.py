@@ -2,6 +2,9 @@ import json
 import pytest
 from sqlalchemy import select, func
 from API import models
+import os
+
+os.environ["DISABLE_WARMUP"] = "1"
 
 def _create_api_key(client, email="alice@example.com", username="alice", password="coall", name="clé de test"):
     payload = {"email": email, "username": username, "name": name}

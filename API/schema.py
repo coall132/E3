@@ -3,6 +3,7 @@ from typing import Optional, List, Dict, Any
 from uuid import UUID
 from datetime import datetime
 from pydantic import BaseModel, Field, ConfigDict
+from dataclasses import dataclass
 
 class TokenOut(BaseModel):
     access_token: str
@@ -45,3 +46,11 @@ class Prediction(BaseModel):
     status: Optional[str] = "ok"
 
     items: List[PredictionItem] = []
+
+@dataclass
+class MLState:
+    preproc: object | None = None          # objet prêt à l’emploi (si dispo)
+    preproc_factory: object | None = None  # ex: build_preproc(df_columns) si tu en as un
+    sent_model: object | None = None
+    rank_model: object | None = None
+    rank_model_path: str | None = None

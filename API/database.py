@@ -1,7 +1,9 @@
 import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.engine import Engine
+import pandas as pd
 
 POSTGRES_USER = os.getenv("POSTGRES_USER", "user")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "password")
@@ -22,3 +24,20 @@ def get_db():
         yield db
     finally:
         db.close()
+
+def extract_table(engine: Engine,table_name: str, schema: str = "public"):
+    if engine is None:
+        raise ValueError("Engine invalide (None).")
+
+    insp = inspect(engine)
+    if not insp.has_table(table_name, schema=schema):
+        print(f"[bdd.extract] table introuvable: {schema}.{table_name}")
+        return pd.DataFrame()
+
+    try:
+        df = pd.read_sql_table(table_name, con=engine, schema=schema)
+        return df
+    except Exception as e:
+        print(f"[bdd.extract] Erreur lecture {schema}.{table_name}: {e}")
+        return pd.DataFrame()
+    
