@@ -35,7 +35,7 @@ api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)
 
 DF_CATALOG: pd.DataFrame = None
 X_ITEMS: np.ndarray = None
-MODEL_PATH = os.getenv("RANK_MODEL_PATH", "artifacts/linear_svc_pointwise.joblib")
+MODEL_PATH = os.getenv("RANK_MODEL_PATH", ".\artifacts\linear_svc_pointwise.joblib")
 ML_MODEL = load(MODEL_PATH)        
 SENT_MODEL = bm.model       
 PREPROC = bm.preproc        
