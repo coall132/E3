@@ -12,4 +12,8 @@ pandas
 numpy
 sentence_transformers
 joblib
-
+pgeocode
+matplotlib
+python-dotenv
+deep-translator
+scikit-learn
