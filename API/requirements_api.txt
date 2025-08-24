@@ -8,4 +8,8 @@ argon2-cffi==23.1.0
 pytest
 testcontainers[postgres]
 httpx
+pandas
+numpy
+sentence_transformers
+joblib
 

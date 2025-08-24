@@ -7,6 +7,7 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import UUID, DOUBLE_PRECISION, JSONB
 from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import text
+from sqlalchemy import Column, Integer, TIMESTAMP, func, ForeignKey
 
 Base = declarative_base()
 
@@ -88,3 +89,4 @@ class ApiKey(Base):
     last_used_at = Column(TIMESTAMP(timezone=True), nullable=True)
 
     user = relationship("User", back_populates="api_keys")
+

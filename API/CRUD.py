@@ -7,6 +7,7 @@ from typing import List, Optional
 import os
 from fastapi import FastAPI, Depends, HTTPException, Security, status, Query
 from argon2 import PasswordHasher, exceptions as argon_exc
+from . import models
 
 api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)  # pour /auth/token uniquement
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
@@ -52,3 +53,20 @@ def verify_api_key_hash(api_key_plain: str, key_hash: str):
         return ph.verify(key_hash, api_key_plain)
     except argon_exc.VerifyMismatchError:
         return False
+    
+def verify_api_key(db: Session, API_key_in: str):
+    if not API_key_in or "." not in API_key_in or not API_key_in.startswith("rk_"):
+        raise HTTPException(status_code=401, detail="Clé API manquante ou invalide.", headers={"WWW-Authenticate":"APIKey"})
+
+    prefix, _, _secret = API_key_in.partition(".")
+    key_id = prefix.replace("rk_", "", 1)
+
+    row = db.query(models.ApiKey).filter(models.ApiKey.key_id == key_id,).first()
+
+    if not row or not verify_api_key_hash(API_key_in, row.key_hash):
+        raise HTTPException(status_code=401, detail="Clé API invalide.", headers={"WWW-Authenticate":"APIKey"})
+
+    row.last_used_at = datetime.now(timezone.utc)
+    db.add(row); db.commit()
+
+    return row
