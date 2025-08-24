@@ -35,6 +35,14 @@ W_proxy = {'price':0.18,'rating':0.14,'options':0.14,'text':0.28,'city':0.04,'op
 W_eval  = {'price':0.12,'rating':0.18,'options':0.12,'text':0.22,'city':0.20,'open':0.16}
 tau = 0.60
 
+def _is_nanlike(x):
+    return isinstance(x, float) and np.isnan(x)
+
+def _text_or_empty(x):
+    if x is None or _is_nanlike(x):
+        return ''
+    return str(x).strip()
+
 def fget(form, key, default=None):
     """Accès robuste à un champ de form (dict, pandas Series, namedtuple...)."""
     if isinstance(form, dict):
@@ -125,16 +133,20 @@ def _normalize_multivalue(value):
             out.append(s)
     return out 
 
-def h_price_vector_simple(df, form):
+def h_price_vector(df, form):
     if 'priceLevel' not in df.columns:
         return np.ones(len(df), dtype=float)
 
     lvl_f = fget(form, 'price_level', None)
-    if np.isnan(lvl_f):
+    lvl_ok = None
+    if isinstance(lvl_f, (int, float, np.floating)) and not _is_nanlike(lvl_f):
+        lvl_ok = float(lvl_f)
+
+    if lvl_ok is None:
         return np.ones(len(df), dtype=float)
 
-    pl = df['priceLevel']
-    diff = (pl.astype(float).fillna(lvl_f) - float(lvl_f)).abs()
+    pl = df['priceLevel'].astype(float)
+    diff = (pl.fillna(lvl_ok) - lvl_ok).abs()
     return (1.0 - (diff / 3.0)).clip(0.0, 1.0).to_numpy(dtype=float)
 
 def h_rating_vector(df, alpha=20.0):
@@ -241,10 +253,9 @@ def topk_mean_cosine(mat_or_list, z, k=3):
     return float(np.mean(sims[idx]))
 
 def score_text(df, form, model, w_rev=0.6, w_desc=0.4, k=3, missing_cos=0.0):
-    q = (fget(form, 'description', '') or '').strip()
+    q = _text_or_empty(fget(form, 'description', None))
     if not q:
         return np.ones(len(df), dtype=float)
-
     z = model.encode([q], normalize_embeddings=True, show_progress_bar=False)[0].astype(np.float32)
     N = len(df); out = np.empty(N, dtype=float)
 
@@ -265,7 +276,7 @@ def score_text(df, form, model, w_rev=0.6, w_desc=0.4, k=3, missing_cos=0.0):
 
 def score_func(df, form, model):
     score={}
-    score["price"] = h_price_vector_simple(df, form)
+    score["price"] = h_price_vector(df, form)
     score["rating"] = h_rating_vector(df, alpha=20.0)
     score["city"] = h_city_vector(df, form)
     score["options"] = h_opts_vector(df, form)
@@ -334,7 +345,7 @@ def _iter_forms(forms):
         yield forms
 
 def compute_form_embed(form, sent_model):
-    q = (fget(form, 'description', '') or '').strip()
+    q = _text_or_empty(fget(form, 'description', None))
     if not q:
         return None
     z = sent_model.encode([q], normalize_embeddings=True, show_progress_bar=False)[0]
@@ -355,13 +366,7 @@ def anchor_cos_features(zf, anchors):
     return {f"q_anchor_{i}": float((s + 1.0)/2.0) for i, s in enumerate(sims)}
 
 def build_item_features_df(df, form, sent_model, include_query_consts=False, anchors=None):
-    """
-    Retourne:
-      X_df : DataFrame de features par item (interactions + quelques brutes utiles)
-      gains: vecteur des gains proxy (pour y/sw)
-    """
-
-    H = score_func(df, form, sent_model) 
+    H = score_func(df, form, sent_model)
 
     data = {
         "feat_price":   np.asarray(H["price"],   float),
@@ -373,34 +378,47 @@ def build_item_features_df(df, form, sent_model, include_query_consts=False, anc
     }
 
     lvl = fget(form, 'price_level', np.nan)
-    if "priceLevel" in df.columns and not (lvl is None or (isinstance(lvl, float) and np.isnan(lvl))):
+    if "priceLevel" in df.columns:
+        lvl_num = (np.nan if (lvl is None or (isinstance(lvl, float) and np.isnan(lvl)))
+                   else float(lvl))
         data["f_price_absdiff"] = (
-            np.abs(df["priceLevel"].astype(float) - float(lvl)).fillna(0.0).to_numpy() / 3.0
+            np.abs(df["priceLevel"].astype(float) - (0.0 if np.isnan(lvl_num) else lvl_num))
+            .fillna(0.0).to_numpy() / 3.0
         )
 
     req_opts = _extract_requested_options(form, df)
     data["f_req_count"] = np.full(len(df), float(len(req_opts) if req_opts else 0.0))
 
     zf = compute_form_embed(form, sent_model)
-    if zf is not None and "desc_embed" in df.columns:
-        data["f_text_desc_cos"] = (
-            df["desc_embed"].apply(lambda v: float(v @ zf) if isinstance(v, np.ndarray) and v.ndim == 1 else 0.0)
-            .apply(lambda c: (c + 1.0) / 2.0).to_numpy()
+    if "desc_embed" in df.columns and zf is not None:
+        v = (
+            df["desc_embed"]
+              .apply(lambda e: float(e @ zf) if isinstance(e, np.ndarray) and e.ndim == 1 else 0.0)
+              .apply(lambda c: (c + 1.0) / 2.0)
+              .to_numpy()
         )
+    else:
+        v = np.zeros(len(df), dtype=float) 
+    data["f_text_desc_cos"] = v
 
     for c in ["rating", "priceLevel", "start_price", "latitude", "longitude"]:
         if c in df.columns:
             data[f"raw_{c}"] = df[c].astype(float).to_numpy()
 
-
     if include_query_consts:
-        data["form_price_level"] = np.full(len(df),
-            float(lvl) if lvl is not None and not (isinstance(lvl, float) and np.isnan(lvl)) else np.nan
+        data["form_price_level"] = np.full(
+            len(df),
+            (np.nan if (lvl is None or (isinstance(lvl, float) and np.isnan(lvl))) else float(lvl))
         )
- 
-        q_anchor = anchor_cos_features(zf, anchors)
-        for k, v in q_anchor.items():
-            data[k] = np.full(len(df), v)
+        if anchors is not None:
+            K = anchors.shape[0] if isinstance(anchors, np.ndarray) else len(anchors)
+            if zf is not None:
+                sims = (anchors @ zf).astype(float)  # cos [-1,1]
+                sims = (sims + 1.0) / 2.0           # map to [0,1]
+            else:
+                sims = np.full(K, 0.0, dtype=float) # neutre si pas de texte
+            for i in range(K):
+                data[f"q_anchor_{i}"] = np.full(len(df), sims[i], dtype=float)
 
     X_df = pd.DataFrame(data, index=df.index)
     if "id_etab" in df.columns:
@@ -544,4 +562,4 @@ def train_pointwise_from_csv(forms_csv: str,out_path: str | None = None,clf_name
     return out_path, cols
 
 if __name__ == "__main__":
-    train_pointwise_from_csv("/mnt/data/forms_restaurants_dept37_single_cp.csv")
+    train_pointwise_from_csv("forms_restaurants_dept37_single_cp.csv")

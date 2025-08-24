@@ -4,13 +4,16 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.engine import Engine
 import pandas as pd
+from dotenv import load_dotenv, find_dotenv
 
-POSTGRES_USER = os.getenv("POSTGRES_USER", "user")
-POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "password")
+load_dotenv()
+
+POSTGRES_USER = os.getenv("POSTGRES_USER")
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD")
 POSTGRES_DB = os.getenv("POSTGRES_DB", "db")
-POSTGRES_HOST = os.getenv("POSTGRES_HOST", "postgres") 
+POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost") 
 
-SQLALCHEMY_DATABASE_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:5432/{POSTGRES_DB}"
+SQLALCHEMY_DATABASE_URL = f"postgresql://{POSTGRES_USER}:{POSTGRES_PASSWORD}@{POSTGRES_HOST}:5433/{POSTGRES_DB}"
 
 engine = create_engine(SQLALCHEMY_DATABASE_URL)
 
