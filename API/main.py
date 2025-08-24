@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Depends, HTTPException, Security, status, Query
+from fastapi import FastAPI, Depends, HTTPException, Security, status, Query, Request
 from fastapi.security import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -9,6 +9,8 @@ import pandas as pd
 import numpy as np
 from joblib import load
 from sqlalchemy import MetaData, Table, select, outerjoin
+import joblib
+from pathlib import Path
 
 from . import CRUD
 from . import models
@@ -33,11 +35,9 @@ app.add_middleware(
 API_STATIC_KEY = os.getenv("API_STATIC_KEY", "coall")
 api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)
 
-DF_CATALOG: pd.DataFrame = None
-X_ITEMS: np.ndarray = None
-ML_MODEL = load(r".\artifacts\linear_svc_pointwise.joblib")        
-SENT_MODEL = bm.model       
-PREPROC = bm.preproc        
+app.state.ml_model = None
+app.state.sent_model = None
+app.state.preproc = None
 TOPK_DEFAULT = int(os.getenv("PRED_TOPK_DEFAULT", "3"))
 
 @app.get("/")
@@ -96,11 +96,23 @@ def _to_list_np(x):
 
 @app.on_event("startup")
 def warmup_catalog_and_model_sqlalchemy():
-    global DF_CATALOG, X_ITEMS, ML_MODEL, PREPROC, SENT_MODEL
-
+    """
+    Charge en mémoire:
+      - DF_CATALOG (avec desc_embed/rev_embeds transformés)
+      - X_ITEMS = PREPROC.fit_transform(DF_CATALOG)
+      - ML_MODEL (joblib)
+      - PREPROC, SENT_MODEL (depuis benchmark_3)
+    Tout est stocké sur app.state.*
+    """
+    # 1) objets ML de référence
+    app.state.PREPROC = getattr(bm, "preproc", None)
+    app.state.SENT_MODEL = getattr(bm, "model", None)
+    if app.state.PREPROC is None:
+        raise RuntimeError("PREPROC introuvable (benchmark_3.preproc).")
+    # 2) lire catalogue + embeddings
     metadata = MetaData()
     Emb = Table("etab_embedding", metadata, schema="public", autoload_with=engine)
-    Etab = models.Etablissement.__table__
+    Etab = models.Etablissement.__table__  # ta table des restos
 
     with SessionLocal() as db:
         stmt = (
@@ -115,59 +127,76 @@ def warmup_catalog_and_model_sqlalchemy():
         )
         rows = db.execute(stmt).mappings().all()
 
-    # 3) DataFrame + normalisation douce
-    DF_CATALOG = pd.DataFrame(rows)
+    df = pd.DataFrame(rows)
 
+    # colonnes attendues par benchmark_3 (filets de sécurité)
     for c in getattr(bm, "BOOL_COLS", []):
-        if c not in DF_CATALOG.columns:
-            DF_CATALOG[c] = False
+        if c not in df.columns:
+            df[c] = False
     for c in getattr(bm, "NUM_COLS", []):
-        if c not in DF_CATALOG.columns:
-            DF_CATALOG[c] = 0.0
+        if c not in df.columns:
+            df[c] = 0.0
+    if "priceLevel" not in df.columns: df["priceLevel"] = np.nan
+    if "code_postal" not in df.columns: df["code_postal"] = ""
+    if "editorialSummary_text" not in df.columns: df["editorialSummary_text"] = ""
 
-    if "priceLevel" not in DF_CATALOG.columns:
-        DF_CATALOG["priceLevel"] = np.nan
-    if "code_postal" not in DF_CATALOG.columns:
-        DF_CATALOG["code_postal"] = ""
-    if "editorialSummary_text" not in DF_CATALOG.columns:
-        DF_CATALOG["editorialSummary_text"] = ""
+    # embeddings -> numpy
+    df["desc_embed"] = df.get("desc_embed", None)
+    df["rev_embeds"] = df.get("rev_embeds", None)
+    if "desc_embed" in df.columns:
+        df["desc_embed"] = df["desc_embed"].apply(_to_np1d)
+    if "rev_embeds" in df.columns:
+        df["rev_embeds"] = df["rev_embeds"].apply(_to_list_np)
 
-    DF_CATALOG["desc_embed"] = DF_CATALOG.get("desc_embed", None)
-    DF_CATALOG["rev_embeds"] = DF_CATALOG.get("rev_embeds", None)
-    if "desc_embed" in DF_CATALOG.columns:
-        DF_CATALOG["desc_embed"] = DF_CATALOG["desc_embed"].apply(_to_np1d)
-    if "rev_embeds" in DF_CATALOG.columns:
-        DF_CATALOG["rev_embeds"] = DF_CATALOG["rev_embeds"].apply(_to_list_np)
+    app.state.DF_CATALOG = df
 
-    # 4) Fit/transform une seule fois avec TON preproc (de benchmark_3.py)
-    X = PREPROC.fit_transform(DF_CATALOG)
-    X_ITEMS = X.toarray().astype(np.float32) if hasattr(X, "toarray") else np.asarray(X, dtype=np.float32)
+    # 3) features item
+    X = app.state.PREPROC.fit_transform(df)
+    app.state.X_ITEMS = X.toarray().astype(np.float32) if hasattr(X, "toarray") else np.asarray(X, dtype=np.float32)
 
-    # 5) Charger TON modèle
-    ML_MODEL = load(MODEL_PATH)
+    # 4) modèle de ranking
+    model_path = os.getenv("RANK_MODEL_PATH", str(Path("artifacts") / "linear_svc_pointwise.joblib"))
+    try:
+        app.state.ML_MODEL = joblib.load(model_path)
+        print(f"[startup] rank model: {model_path}")
+    except Exception as e:
+        print(f"[startup] impossible de charger {model_path}: {e}")
+        # fallback minimal pour pouvoir tourner en dev/tests
+        from sklearn.pipeline import make_pipeline
+        from sklearn.preprocessing import StandardScaler
+        from sklearn.svm import LinearSVC
+        rng = np.random.default_rng(0)
+        X = rng.normal(size=(40, app.state.X_ITEMS.shape[1])).astype(np.float32)
+        y = (rng.random(40) > 0.5).astype(int)
+        app.state.ML_MODEL = make_pipeline(StandardScaler(), LinearSVC()).fit(X, y)
 
 @app.post("/predict", tags=["Reco"])
-def predict(form: schema.Form,k: int = TOPK_DEFAULT,_auth: str = Depends(CRUD.get_current_subject),db: Session = Depends(get_db)):
-    """
-    Recommandation top-k :
-      - utilise EXACTEMENT les fonctions de benchmark_3.py
-      - features item pré-calculées au démarrage (X_ITEMS)
-      - similarité texte via desc_embed / rev_embeds déjà en base
-      - enregistre dans ml.prediction + ml.prediction_item
-    """
-    global DF_CATALOG, X_ITEMS, ML_MODEL, PREPROC, SENT_MODEL
-    if DF_CATALOG is None or X_ITEMS is None or ML_MODEL is None:
+def predict(
+    form: schema.Form,
+    request: Request,
+    k: int = Query(TOPK_DEFAULT, ge=1, le=50),
+    _auth: str = Depends(CRUD.get_current_subject),
+    db: Session = Depends(get_db),
+):
+    st = request.app.state
+    # Sanity checks
+    if any(getattr(st, n, None) is None for n in ("DF_CATALOG","X_ITEMS","ML_MODEL","PREPROC")):
         raise HTTPException(status_code=503, detail="Service ML non prêt.")
 
     t0 = time.perf_counter()
 
-    # 1) On persiste le formulaire (optionnel mais conseillé)
-    form_db = models.FormDB(price_level=form.price_level,city=form.city,open=form.open,
-        options=form.options,description=form.description,)
+    # 1) persister le formulaire
+    form_db = models.FormDB(
+        price_level=form.price_level,
+        city=form.city,
+        open=form.open,
+        options=form.options,
+        description=form.description,
+    )
     db.add(form_db)
     db.flush()
 
-    # 2) On prépare le dict pour les helpers (city -> code_postal via ta fonction)
+    # 2) préparer dict compatible avec benchmark_3
     fdict = form.model_dump()
     if form.city:
         try:
@@ -175,51 +204,61 @@ def predict(form: schema.Form,k: int = TOPK_DEFAULT,_auth: str = Depends(CRUD.ge
         except Exception:
             fdict["code_postal"] = None
 
-    # 3) Vecteur requête Zf avec TA pipeline PREPROC et TA fonction form_to_row
-    Zf_sp = PREPROC.transform(bm.form_to_row(fdict, DF_CATALOG))
+    # 3) vecteur requête via ta pipeline
+    Zf_sp = st.PREPROC.transform(bm.form_to_row(fdict, st.DF_CATALOG))
     Zf = Zf_sp.toarray()[0] if hasattr(Zf_sp, "toarray") else np.asarray(Zf_sp)[0]
 
-    # 4) Signaux H EXACTEMENT via tes fonctions (incluant score_text qui lit desc_embed/rev_embeds)
+    # 4) signaux H (exactement comme ton fichier)
     H = {
-        'price':   bm.h_price_vector_simple(DF_CATALOG, fdict),
-        'rating':  bm.h_rating_vector(DF_CATALOG),
-        'city':    bm.h_city_vector(DF_CATALOG, fdict),
-        'options': bm.h_opts_vector(DF_CATALOG, fdict),
-        'open':    bm.h_open_vector(DF_CATALOG, fdict),
-        'text':    bm.score_text(DF_CATALOG, fdict, SENT_MODEL, w_rev=0.6, w_desc=0.4, k=3, missing_cos=0.0),
+        "price":   bm.h_price_vector_simple(st.DF_CATALOG, fdict),
+        "rating":  bm.h_rating_vector(st.DF_CATALOG),
+        "city":    bm.h_city_vector(st.DF_CATALOG, fdict),
+        "options": bm.h_opts_vector(st.DF_CATALOG, fdict),
+        "open":    bm.h_open_vector(st.DF_CATALOG, fdict),
+        "text":    bm.score_text(st.DF_CATALOG, fdict, st.SENT_MODEL, w_rev=0.6, w_desc=0.4, k=3, missing_cos=0.0),
     }
 
-    # 5) Construction des features requête-item comme dans ton fichier
-    Xq = bm.pair_features(Zf, H, X_ITEMS)
+    # 5) features requête-item
+    Xq = bm.pair_features(Zf, H, st.X_ITEMS)
 
-    # 6) Score via ton LinearSVC pointwise
-    if hasattr(ML_MODEL, "decision_function"):
-        scores = ML_MODEL.decision_function(Xq)
-    elif hasattr(ML_MODEL, "predict_proba"):
-        scores = ML_MODEL.predict_proba(Xq)[:, 1]
+    # 6) scoring par ton LinearSVC pointwise
+    model = st.ML_MODEL
+    if hasattr(model, "decision_function"):
+        scores = model.decision_function(Xq)
+    elif hasattr(model, "predict_proba"):
+        scores = model.predict_proba(Xq)[:, 1]
     else:
-        scores = ML_MODEL.predict(Xq).astype(float)
+        scores = model.predict(Xq).astype(float)
 
-    # 7) Top-k
+    # 7) top-k
     k = int(max(1, min(k, len(scores))))
     order = np.argsort(scores)[::-1][:k]
-    top_ids = DF_CATALOG.iloc[order]["id_etab"].astype(int).tolist()
+    top_ids = st.DF_CATALOG.iloc[order]["id_etab"].astype(int).tolist()
     top_scores = [float(scores[i]) for i in order]
 
-    # 8) Persistance de la prédiction
+    # 8) persistance ml.prediction + ml.prediction_item
     latency_ms = int((time.perf_counter() - t0) * 1000)
-    pred = models.Prediction(form_id=form_db.id,k=k,model_version="LinearSVC_pointwise_v1",
-        latency_ms=latency_ms,status="ok",)
+    pred = models.Prediction(
+        form_id=form_db.id,
+        k=k,
+        model_version="LinearSVC_pointwise_v1",
+        latency_ms=latency_ms,
+        status="ok",
+    )
     db.add(pred)
     db.flush()
 
     items = []
     for r, i in enumerate(order, start=1):
-        it = models.PredictionItem(prediction_id=pred.id,rank=r,
-            etab_id=int(DF_CATALOG.iloc[i]["id_etab"]),score=float(scores[i]),)
-        db.add(it)
-        items.append({"rank": r, "etab_id": it.etab_id, "score": it.score})
+        etab_id = int(st.DF_CATALOG.iloc[i]["id_etab"])
+        score = float(scores[i])
+        db.add(models.PredictionItem(
+            prediction_id=pred.id,
+            rank=r,
+            etab_id=etab_id,
+            score=score
+        ))
+        items.append({"rank": r, "etab_id": etab_id, "score": score})
 
     db.commit()
-
-    return {"prediction_id": str(pred.id),"k": k,"latency_ms": latency_ms,"items": items,}
+    return {"prediction_id": str(pred.id), "k": k, "latency_ms": latency_ms, "items": items}
