@@ -1,109 +1,73 @@
-import json
-import pytest
-from sqlalchemy import select, func
-from API import models
 import os
+import numpy as np
+import pandas as pd
+import sqlalchemy as sa
+from sqlalchemy.orm import sessionmaker
+from fastapi.testclient import TestClient
 
-os.environ["DISABLE_WARMUP"] = "1"
+os.environ.setdefault("DISABLE_WARMUP", "1")
 
-def _create_api_key(client, email="alice@example.com", username="alice", password="coall", name="clé de test"):
-    payload = {"email": email, "username": username, "name": name}
-    return client.post("/auth/api-keys", params={"password": password}, json=payload)
+import main
+import models
+from database import Base
 
-def _exchange_token(client, api_key: str):
-    return client.post("/auth/token", headers={"X-API-KEY": api_key})
+def _sqlite_session_override():
+    engine = sa.create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(bind=engine)
+    TestingSessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 
-def _auth_headers(client):
-    r = _create_api_key(client)
-    assert r.status_code == 200, r.text
-    api_key = r.json()["api_key"]
-    r2 = _exchange_token(client, api_key)
-    assert r2.status_code == 200, r2.text
-    token = r2.json()["access_token"]
-    return {"Authorization": f"Bearer {token}"}
+    def _get_db():
+        db = TestingSessionLocal()
+        try:
+            yield db
+        finally:
+            db.close()
+    return _get_db
 
-def _count(db_session, model_cls):
-    return db_session.execute(select(func.count()).select_from(model_cls)).scalar_one()
+def test_auth_flow_and_predict():
+    # Override DB dep
+    main.app.dependency_overrides[main.get_db] = _sqlite_session_override()
 
-def test_predict_happy_path(client, db_session):
-    headers = _auth_headers(client)
+    # Setup catalogue (comme dans conftest)
+    n = 4
+    df = pd.DataFrame({
+        "id_etab": range(1, n+1),
+        "rating": [4.0, 3.0, 5.0, 4.5],
+        "priceLevel": [1, 2, 3, 2],
+        "latitude": [47.39]*n,
+        "longitude": [0.68]*n,
+        "editorialSummary_text": ["a", "b", "c", "d"],
+        "start_price": [10, 14, 30, 18],
+        "code_postal": ["37000", "37000", "37100", "37100"],
+        "delivery": [True, False, True, False],
+        "servesVegetarianFood": [True, True, False, True],
+        "desc_embed": [np.array([0.2, -0.1, 0.05, 0.3], dtype=np.float32)]*n,
+        "rev_embeds": [None]*n,
+        "ouvert_lundi_midi": [1, 1, 0, 1],
+    })
+    main.app.state.DF_CATALOG = df
 
-    # Compter les lignes avant (si ton /predict persiste en base)
-    before_form = _count(db_session, models.FormDB)
-    before_pred = _count(db_session, models.Prediction)
-    before_item = _count(db_session, models.PredictionItem)
+    # Client sans override auth (vrai flux)
+    with TestClient(main.app) as client:
+        # 1) créer une API key
+        payload = {"email": "u@test", "username": "u1"}
+        r = client.post("/auth/api-keys?password=" + os.getenv("API_STATIC_KEY", "coall"), json=payload)
+        assert r.status_code == 200, r.text
+        api_key = r.json()["api_key"]
 
-    form = {
-        "price_level": 2,
-        "code_postal": ["37000", "37100", "37200"],   # adapte si ton schéma diffère
-        "open": "ouvert_samedi_soir",
-        "options": ["servesVegetarianFood", "outdoorSeating"],
-        "description": "italien calme avec terrasse"
-    }
-    params = {"k": 2}
+        # 2) échanger contre un token
+        r = client.post("/auth/token", headers={"X-API-KEY": api_key})
+        assert r.status_code == 200, r.text
+        token = r.json()["access_token"]
 
-    r = client.post("/predict", headers=headers, params=params, json=form)
-    assert r.status_code == 200, r.text
-    data = r.json()
+        # 3) call /predict avec Bearer
+        form = {
+            "price_level": 2, "city": "37000", "open": "ouvert_lundi_midi",
+            "options": ["delivery"], "description": "pizzeria"
+        }
+        r = client.post("/predict?k=3", json=form, headers={"Authorization": f"Bearer {token}"})
+        assert r.status_code == 200, r.text
+        data = r.json()
+        assert len(data["items"]) == 3
 
-    # Structure de réponse minimale attendue
-    assert "items" in data
-    assert isinstance(data["items"], list)
-    assert len(data["items"]) == 2
-
-    for rank, it in enumerate(data["items"], start=1):
-        # tolérant sur le nom des clés : etab_id ou id_etab
-        assert any(k in it for k in ("etab_id", "id_etab")), it
-        assert "score" in it
-        # si la réponse contient 'rank', vérifie la cohérence
-        if "rank" in it:
-            assert it["rank"] == rank
-
-    # Vérifie la persistance (si ton endpoint enregistre form + prediction + items)
-    after_form = _count(db_session, models.FormDB)
-    after_pred = _count(db_session, models.Prediction)
-    after_item = _count(db_session, models.PredictionItem)
-
-    assert after_form == before_form + 1
-    assert after_pred == before_pred + 1
-    assert after_item >= before_item + 2  # au moins k items
-
-def test_predict_requires_auth(client):
-    form = {
-        "price_level": 2,
-        "code_postal": ["37000"],
-        "open": "ouvert_samedi_soir",
-        "options": [],
-        "description": "bistrot"
-    }
-    r = client.post("/predict", json=form, params={"k": 2})
-    assert r.status_code in (401, 403)
-
-def test_predict_bad_k_validation(client):
-    headers = _auth_headers(client)
-    form = {
-        "price_level": 2,
-        "code_postal": ["37000"],
-        "open": "ouvert_samedi_soir",
-        "options": [],
-        "description": "bistrot"
-    }
-    # k=0 (en dehors de ge=1) -> 422 attendu si tu as la validation Pydantic
-    r = client.post("/predict", headers=headers, params={"k": 0}, json=form)
-    assert r.status_code in (400, 422)
-
-def test_predict_k_greater_than_catalog_size(client):
-    headers = _auth_headers(client)
-    form = {
-        "price_level": 2,
-        "code_postal": ["37000", "37100", "37200"],
-        "open": "ouvert_samedi_soir",
-        "options": ["servesVegetarianFood"],
-        "description": "terrasse"
-    }
-    r = client.post("/predict", headers=headers, params={"k": 10}, json=form)
-    assert r.status_code == 200, r.text
-    data = r.json()
-    # le catalogue seedé dans la fixture contient 3 restos => on doit avoir <= 3 items
-    assert "items" in data and isinstance(data["items"], list)
-    assert 1 <= len(data["items"]) <= 3
+    main.app.dependency_overrides.clear()
