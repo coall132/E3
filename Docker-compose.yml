@@ -38,7 +38,26 @@ services:
       - "5001:5000"
     networks:
       - shared_net
-
+  monitor:
+    image: python:3.11-slim
+    working_dir: /app
+    command: bash -lc "pip install mlflow requests numpy && python monitor/monitor_ia.py"
+    volumes:
+      - ./monitor:/app/monitor_ia:ro
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_EXPERIMENT: restaurant-api
+      DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL}
+      LAT_AVG_N: "10"
+      LAT_THRESHOLD_MS: "10000"
+      RATING_AVG_N: "10"
+      RATING_MIN_THRESHOLD: "1.0"
+      CHECK_INTERVAL_SEC: "60"
+      ALERT_COOLDOWN_SEC: "600"
+    depends_on:
+      - mlflow
+    networks:
+      - shared_net
 
 networks:
   data_network:
