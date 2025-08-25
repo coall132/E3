@@ -50,7 +50,7 @@ def test_auth_flow_and_predict():
     # Client sans override auth (vrai flux)
     with TestClient(main.app) as client:
         # 1) créer une API key
-        payload = {"email": "u@test", "username": "u1"}
+        payload = {"email": "u@test", "username": "user1"}
         r = client.post("/auth/api-keys?password=" + os.getenv("API_STATIC_KEY", "coall"), json=payload)
         assert r.status_code == 200, r.text
         api_key = r.json()["api_key"]
