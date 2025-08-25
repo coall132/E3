@@ -132,6 +132,21 @@ def client(db_session, monkeypatch):
     # bypass auth pour tests unitaires (si tu veux tester l’auth, fais-le dans un autre test sans cet override)
     fastapi_app.dependency_overrides[CRUD.get_current_subject] = lambda: "user:1"
 
+    try:
+        df = fastapi_app.state.DF_CATALOG
+        if df is not None and not df.empty and "id_etab" in df.columns:
+            # récupérer déjà présents pour éviter les doublons
+            existing = set(r[0] for r in db_session.execute(text("SELECT id_etab FROM etab")).fetchall())
+            missing_ids = [int(x) for x in df["id_etab"].tolist() if int(x) not in existing]
+            if missing_ids:
+                # insert en bulk portable (SQLAlchemy) — OK pour SQLite et Postgres
+                values = [{"id_etab": i, "nom": f"etab_{i}"} for i in missing_ids]
+                db_session.execute(text("INSERT INTO etab (id_etab, nom) VALUES (:id_etab, :nom)"), values)
+                db_session.commit()
+    except Exception as e:
+        # Ne casse pas les tests si seed facultatif — mais log utile
+        print(f"[tests] etab seed skipped/failed: {e}")
+
     with TestClient(fastapi_app) as c:
         yield c
 
