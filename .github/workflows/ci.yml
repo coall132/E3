@@ -32,7 +32,7 @@ jobs:
           key: pip-${{ runner.os }}-${{ hashFiles('**/requirements_api.txt') }}
 
       - name: Install deps
-        run: pip install -r requirements_api.txt
+        run: pip install -r requirements_dev.txt
 
       - name: Run tests
         env:
@@ -40,6 +40,16 @@ jobs:
           API_STATIC_KEY: "coall"
           PYTHONPATH: ${{ github.workspace }} 
         run: pytest -q
+      
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1
+        with:
+          tool-cache: true
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          swap-storage: true
 
       # Build & Push vers Docker Hub (change l’org & ajoute secrets)
       - name: Set up QEMU
@@ -60,6 +70,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .            
-          file: ./API/Dockerfile     
+          file: ./API/Dockerfile   
+          target: prod   
           push: true
           tags: ${{ secrets.DOCKERHUB_USERNAME }}/restaurant-api:latest,${{ secrets.DOCKERHUB_USERNAME }}/restaurant-api:${{ github.sha }}

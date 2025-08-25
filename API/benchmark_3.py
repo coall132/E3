@@ -1,3 +1,4 @@
+"""
 import pandas as pd
 import numpy as np
 import time
@@ -395,10 +396,7 @@ def form_to_row(form, df_catalog):
     return pd.DataFrame([row])[df_catalog.columns]
 
 def aggregate_gains(H, weights):
-    """
-    Combine les signaux H (dict de vecteurs par item) en un score unique par item,
-    via une moyenne pondérée par 'weights'. Sortie: array (N_items,).
-    """
+
     keys = list(H)  
     W = np.array([float(weights[k]) for k in keys], dtype=float)
     gains = np.zeros_like(np.asarray(H[keys[0]], dtype=float), dtype=float)
@@ -412,13 +410,7 @@ def pair_features(Zf, H, X_items):
     return np.hstack([diff, cos]).astype(np.float32)
 
 def build_pointwise(forms_df, preproc, df, X_items, SENT_MODEL, tau=tau, W=W_proxy):
-    """
-    Génère un dataset pointwise:
-      - X: une ligne par item (toutes les lignes de toutes les requêtes)
-      - y: label binaire (gains >= tau)
-      - sw: poids d'exemple = |gains - tau| + 1e-3
-      - qid: id de la requête (pour group-by/éval)
-    """
+
     X_list, y_list, sw_list, qid_list = [], [], [], []
     n_items = len(df)
 
@@ -455,12 +447,7 @@ def build_pointwise(forms_df, preproc, df, X_items, SENT_MODEL, tau=tau, W=W_pro
 
 def build_pairwise(forms_df, preproc, df, X_items, SENT_MODEL,
                    tau=tau, W=W_proxy, top_m=10, bot_m=10):
-    """
-    Génère un dataset pairwise à la RankSVM:
-      - on prend les 'top_m' meilleurs items et les 'bot_m' pires (proxy),
-      - on crée des exemples (X_pos - X_neg) étiquetés 1,
-      - poids = différence de gains.
-    """
+
     Xp, yp, wp = [], [], []
 
     for form in _iter_forms(forms_df):
@@ -494,13 +481,7 @@ def build_pairwise(forms_df, preproc, df, X_items, SENT_MODEL,
 
 def eval_on_forms(forms_df, preproc, df, X_items, SENT_MODEL, models, k=5,
                   tau_q=0.85, use_top_m=None, jitter=1e-6):
-    """
-    Évalue Random, RuleProxy et les modèles sur un set de formulaires :
-      - gold binaire défini par quantile (tau_q) ou top-M sur gains_eval (W_eval),
-      - NDCG binaire (robuste aux gains plats),
-      - RuleProxy classe avec W_proxy (pas un oracle),
-      - moyenne P@k / NDCG@k sur toutes les requêtes.
-    """
+
     out = {name: [] for name in (["Random", "RuleProxy"] + list(models.keys()))}
 
     for form in _iter_forms(forms_df):
@@ -584,9 +565,7 @@ def dcg_at_k(r, k):
     return r[0] + (r[1:] / np.log2(np.arange(2, r.size + 1))).sum()
 
 def ndcg_binary_at_k(pred, gold, k):
-    """
-    NDCG@k à pertinence binaire (1 si item ∈ gold, sinon 0).
-    """
+
     n = len(pred)
     idx = np.asarray(pred, dtype=int)[:k]
     # vecteur de pertinence binaire
@@ -624,7 +603,7 @@ def hitrate_at_k(pred, gold, k):
     return 1.0 if np.isin(idx, list(gold)).any() else 0.0
 
 def ap_at_k(pred, gold, k):
-    """Average Precision @ k (binaire) sur une requête."""
+
     if not isinstance(gold, (set, frozenset)):
         gold = set(gold)
     if len(gold) == 0:
@@ -642,7 +621,7 @@ def ap_at_k(pred, gold, k):
     return float(np.sum(precisions) / denom)
 
 def mrr_at_k(pred, gold, k):
-    """Reciprocal Rank @ k."""
+
     if not isinstance(gold, (set, frozenset)):
         gold = set(gold)
     idx = np.asarray(pred, dtype=int)[:k]
@@ -652,7 +631,7 @@ def mrr_at_k(pred, gold, k):
     return 0.0
 
 def _bootstrap_ci(values, n_boot=300, alpha=0.05, rng=None):
-    """IC bootstrap du mean (par défaut 95%). values: liste/array par requête."""
+
     values = np.asarray(values, dtype=float)
     if values.size == 0:
         return (0.0, 0.0, 0.0)
@@ -722,12 +701,7 @@ def forms_from_csv(path_csv: str, df_catalog: pd.DataFrame):
 
 def eval_benchmark(forms_df, preproc, df, X_items, SENT_MODEL, models, k=5,
                    tau_q=0.85, use_top_m=None, jitter=1e-6, n_boot=300):
-    """
-    Benchmark 'léger' :
-      - Precision@k, Recall@k, MAP@k, MRR@k, NDCG@k (binaire)
-      - Moyenne par modèle + IC bootstrap (95%)
-    Retour: (summary_df, per_query_df)
-    """
+
     model_names = ["Random", "RuleProxy"] + list(models.keys())
     per_model = {name: [] for name in model_names}
 
@@ -817,10 +791,7 @@ def eval_benchmark(forms_df, preproc, df, X_items, SENT_MODEL, models, k=5,
 import matplotlib.pyplot as plt
 
 def plot_metric_bars(summary_df, metric, out_path):
-    """
-    Barres avec IC pour 'metric' (ex: 'NDCG@5').
-    summary_df: index=modèle, colonnes: metric_mean/lo95/hi95
-    """
+
     m_mean = f"{metric}_mean"
     m_lo = f"{metric}_lo95"
     m_hi = f"{metric}_hi95"
@@ -841,9 +812,7 @@ def plot_metric_bars(summary_df, metric, out_path):
     plt.close()
 
 def plot_scatter(summary_df, x_metric, y_metric, out_path):
-    """
-    Nuage P@k vs NDCG@k par modèle (moyenne).
-    """
+
     xm = f"{x_metric}_mean"
     ym = f"{y_metric}_mean"
     if not {xm, ym}.issubset(summary_df.columns):
@@ -862,12 +831,7 @@ def plot_scatter(summary_df, x_metric, y_metric, out_path):
 
 
 def make_unsup_view(Xq, keep_cos=True, D_diff=None):
-    """
-    Extrait une vue non-supervisée de Xq = [H_block | diff | cos].
-    - On enlève le bloc H (dépend trop de la règle).
-    - On garde diff (+ cos en option).
-    - On scale et on compresse avec PCA (whiten) pour éviter l'écrasement par diff.
-    """
+
     # Si tu connais D (dimension de Zf), D_diff = D, sinon on l’infère.
     # H_block = Xq[:,:S], diff = Xq[:,S:S+D], cos = Xq[:,-1]
     if D_diff is None:
@@ -885,10 +849,7 @@ def make_unsup_view(Xq, keep_cos=True, D_diff=None):
     return Xu
 
 class KMeansRanker:
-    """
-    Unsupervised KMeans sur une vue 'neutre' (diff + cos).
-    Score = -distance au centroïde le plus proche (option: pondéré par taille de cluster).
-    """
+
     def __init__(self, n_clusters=32, random_state=42, pca_dim=32, weight_by_size=True):
         self.n_clusters = n_clusters
         self.random_state = random_state
@@ -921,11 +882,7 @@ class KMeansRanker:
         return -mins
 
 class AutoencoderRanker:
-    """
-    Unsupervised autoencoder sur diff+cos.
-    mode='typical': score = -MSE (proximité du manifold global)
-    mode='novel'  : score = +MSE (items atypiques mieux scorés)
-    """
+
     def __init__(self, hidden=64, random_state=42, pca_dim=32, mode='typical', max_iter=300, alpha=1e-5):
         assert mode in ('typical','novel')
         self.hidden = hidden
@@ -955,4 +912,4 @@ class AutoencoderRanker:
         Xh = self.ae.predict(Xp)
         err = np.mean((Xp - Xh)**2, axis=1)
         return -err if self.mode == 'typical' else err
-    
+    """

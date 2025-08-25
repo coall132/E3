@@ -15,6 +15,5 @@ joblib
 pgeocode
 matplotlib
 python-dotenv
-deep-translator
 scikit-learn
 mlflow
