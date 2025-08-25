@@ -63,7 +63,7 @@ jobs:
           echo " - ${NS_LOWER}/restaurant-api:latest"
           echo " - ${NS_LOWER}/restaurant-api:${GITHUB_SHA}"
 
-      - name: Login to DockerHub
+      - name: Login to DockerHub 
         if: github.ref == 'refs/heads/main'
         uses: docker/login-action@v3
         with:
