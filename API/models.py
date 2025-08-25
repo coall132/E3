@@ -24,7 +24,7 @@ class FormDB(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     price_level = Column(Integer)
     city = Column(Text)
-    open = Column(Boolean, nullable=True)          
+    open = Column(Text, nullable=True)        
     options = Column(JSONB)             
     description = Column(Text)
     created_at = Column(TIMESTAMP(timezone=True), server_default=func.now(), nullable=False)
