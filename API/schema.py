@@ -47,10 +47,19 @@ class Prediction(BaseModel):
 
     items: List[PredictionItem] = []
 
+class FeedbackIn(BaseModel):
+    prediction_id: UUID
+    etab_id: Optional[int] = None    
+    rating: Optional[int] = None     
+    comment: Optional[str] = None
+
+class FeedbackOut(BaseModel):
+    status: str = "ok"
+
 @dataclass
 class MLState:
-    preproc: object | None = None          # objet prêt à l’emploi (si dispo)
-    preproc_factory: object | None = None  # ex: build_preproc(df_columns) si tu en as un
+    preproc: object | None = None          
+    preproc_factory: object | None = None 
     sent_model: object | None = None
     rank_model: object | None = None
     rank_model_path: str | None = None

@@ -11,6 +11,8 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
+import mlflow
+
 try:
     from . import models
     from . import database
@@ -85,9 +87,17 @@ def verify_api_key(db: Session, API_key_in: str):
 
     row.last_used_at = datetime.now(timezone.utc)
     db.add(row); db.commit()
-
     return row
 
+def current_user_id(subject: str = Depends(get_current_subject)) -> int:
+    try:
+        prefix, uid = subject.split(":", 1)
+        if prefix != "user":
+            raise ValueError
+        return int(uid)
+    except Exception:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sujet JWT invalide")
+    
 def load_ML():
     state = schema.MLState()
     state.preproc = getattr(bm, "preproc", None)
@@ -172,4 +182,30 @@ def load_df():
     if "rev_embeds" in df_final_embed.columns:
         df_final_embed["rev_embeds"] = df_final_embed["rev_embeds"].apply(utils.to_list_np)
     return df_final_embed
-    
+
+def log_prediction_mlflow(form, scores, sel_indices, df, used_ml, latency_ms, k):
+    if not getattr(app.state, "MLFLOW_RUN", None): 
+        return
+
+    topk = []
+    for r, i in enumerate(sel_indices, start=1):
+        etab_id = int(df.iloc[i]["id_etab"]) if "id_etab" in df.columns else int(i)
+        topk.append({"rank": r, "etab_id": etab_id, "score": float(scores[i])})
+
+    mlflow.log_metrics({
+        "latency_ms": latency_ms,
+        "k": k,
+        "used_ml": int(bool(used_ml)),
+        "score_mean": float(np.mean(scores[sel_indices])),
+        "score_std": float(np.std(scores[sel_indices])),
+    })
+
+    if "code_postal" in df.columns:
+        div = len(set(df.iloc[sel_indices]["code_postal"].astype(str)))
+        mlflow.log_metric("diversity_cp", int(div))
+
+    artifact = {
+        "form": {k: v for k, v in form.items() if k in ("price_level","code_postal","options","open","description")},
+        "topk": topk
+    }
+    mlflow.log_dict(artifact, f"predictions/{int(time.time()*1000)}.json")

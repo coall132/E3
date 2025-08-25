@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Depends, HTTPException, Security, status, Query, Request
 from fastapi.security import APIKeyHeader
 from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 from typing import List, Optional
 import os, time
 from datetime import timedelta, datetime, timezone
@@ -11,6 +11,10 @@ from joblib import load
 from sqlalchemy import MetaData, Table, select, outerjoin
 import joblib
 from pathlib import Path
+import mlflow, os, uuid, json, time
+
+MLFLOW_URI = os.getenv("MLFLOW_TRACKING_URI") 
+MLFLOW_EXP = os.getenv("MLFLOW_EXPERIMENT", "reco-inference")
 
 try :
     from . import utils
@@ -70,7 +74,7 @@ def warmup():
         app.state.MODEL_VERSION = os.getenv("MODEL_VERSION", "dev")
         print("[startup] Warmup désactivé (DISABLE_WARMUP=1).")
         return
-
+    
     try:
         df = CRUD.load_df()
         if df is None or df.empty:
@@ -100,6 +104,13 @@ def warmup():
         app.state.SENT_MODEL = DEFAULT_SENT_MODEL
         app.state.ML_MODEL = None
         app.state.MODEL_VERSION = os.getenv("MODEL_VERSION", "dev")
+
+    if MLFLOW_URI:
+        mlflow.set_tracking_uri(MLFLOW_URI)
+        mlflow.set_experiment(MLFLOW_EXP)
+        app.state.MLFLOW_RUN = mlflow.start_run(run_name=f"deploy-{app.state.MODEL_VERSION}", nested=False)
+    else:
+        app.state.MLFLOW_RUN = None
 
     df = app.state.DF_CATALOG
     anchors = pick_anchors_from_df(df, n=8) if not df.empty else None
@@ -164,7 +175,7 @@ def issue_token(API_key_in: Optional[str] = Security(api_key_header), db: Sessio
     return schema.TokenOut(access_token=token, expires_at=exp_ts)
 
 @app.post("/predict", tags=["predict"], dependencies=[Depends(CRUD.get_current_subject)])
-def predict(form: schema.Form, k: int = 10, use_ml: bool = True):
+def predict(form: schema.Form, k: int = 10, use_ml: bool = True,user_id: int = Depends(CRUD.current_user_id)):
     t0 = time.perf_counter()
 
     if not hasattr(app.state, "DF_CATALOG") or app.state.DF_CATALOG is None or app.state.DF_CATALOG.empty:
@@ -172,7 +183,7 @@ def predict(form: schema.Form, k: int = 10, use_ml: bool = True):
     df = app.state.DF_CATALOG
 
     anchors = getattr(app.state, "ANCHORS", None)
-    X_df, gains_proxy = build_item_features_df(df=df,form=form.model_dump(),          sent_model=app.state.SENT_MODEL, 
+    X_df, gains_proxy = build_item_features_df(df=df,form=form.model_dump(),sent_model=app.state.SENT_MODEL, 
         include_query_consts=True,anchors=anchors,                  )
 
     used_ml = False
@@ -205,3 +216,29 @@ def predict(form: schema.Form, k: int = 10, use_ml: bool = True):
 
     return schema.Prediction(id=None,form_id=None,k=k,model_version=model_version,latency_ms=latency_ms,
         status="ok",items=items,)
+
+@app.post("/feedback", response_model=schema.FeedbackOut, tags=["monitoring"])
+def submit_feedback(payload: schema.FeedbackIn,sub: str = Depends(CRUD.get_current_subject),
+                    db: Session = Depends(get_db),user_id: int = Depends(CRUD.current_user_id)):
+    pred = db.query(models.Prediction).options(selectinload(models.Prediction.items)).filter(models.Prediction.id == payload.prediction_id).first()
+    if not pred:
+        raise HTTPException(404, "Prediction introuvable")
+    
+    if getattr(pred, "user_id", None) not in (None, user_id):
+        raise HTTPException(status_code=403, detail="Cette prédiction n'appartient pas à l'utilisateur courant")
+    
+    pred_item_id = None
+    if payload.etab_id is not None:
+        match = next((it for it in pred.items if it.etab_id == payload.etab_id), None)
+        if not match:
+            raise HTTPException(400, "etab_id non présent dans le top-k de cette prédiction")
+        pred_item_id = match.id
+
+    row = models.Feedback(prediction_id=pred.id,prediction_item_id=pred_item_id,etab_id=payload.etab_id,
+        rating=payload.rating,comment=payload.comment)
+    db.add(row); db.commit()
+
+    if getattr(app.state, "MLFLOW_RUN", None):
+        if payload.rating is not None: mlflow.log_metric("user_rating", int(payload.rating))
+        if payload.liked is not None:  mlflow.log_metric("user_liked", int(bool(payload.liked)))
+    return schema.FeedbackOut()

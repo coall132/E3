@@ -2,7 +2,7 @@
 import uuid
 from sqlalchemy import (
     Column, Integer, Text, ForeignKey, TIMESTAMP, func,
-    UniqueConstraint, Index, Boolean,String
+    UniqueConstraint, Index, Boolean,String, JSON, DateTime
 )
 from sqlalchemy.dialects.postgresql import UUID, DOUBLE_PRECISION, JSONB
 from sqlalchemy.orm import declarative_base, relationship
@@ -37,6 +37,7 @@ class Prediction(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     form_id = Column(UUID(as_uuid=True), ForeignKey("ml.form.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(Integer, ForeignKey("user_base.user.id", ondelete="RESTRICT"), nullable=False)
     k = Column(Integer, nullable=False)
     model_version = Column(Text, nullable=False)
     latency_ms = Column(Integer)
@@ -90,3 +91,19 @@ class ApiKey(Base):
 
     user = relationship("User", back_populates="api_keys")
 
+class Feedback(Base):
+    __tablename__ = "feedback"
+    __table_args__ = {'schema': 'ml'}
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    prediction_id = Column(UUID(as_uuid=True),ForeignKey("ml.prediction.id", ondelete="CASCADE"),
+                           nullable=False, index=True)
+
+    prediction_item_id = Column(UUID(as_uuid=True),ForeignKey("ml.prediction_item.id", ondelete="SET NULL"),
+                                nullable=True, index=True)
+
+    etab_id = Column(Integer, nullable=True)  
+    rating = Column(Integer, nullable=True)           
+    comment = Column(Text, nullable=True)
