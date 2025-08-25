@@ -178,12 +178,23 @@ def issue_token(API_key_in: Optional[str] = Security(api_key_header), db: Sessio
     return schema.TokenOut(access_token=token, expires_at=exp_ts)
 
 @app.post("/predict", tags=["predict"], dependencies=[Depends(CRUD.get_current_subject)])
-def predict(form: schema.Form, k: int = 10, use_ml: bool = True, user_id: int = Depends(CRUD.current_user_id)):
+def predict(form: schema.Form, k: int = 10, use_ml: bool = True, user_id: int = Depends(CRUD.current_user_id),db: Session = Depends(get_db),):
     t0 = time.perf_counter()
 
     if not getattr(app.state, "DF_CATALOG", None) is not None or app.state.DF_CATALOG.empty:
         raise HTTPException(500, "Catalogue vide/non chargé.")
     df = app.state.DF_CATALOG
+
+    try:
+        form_row = models.FormDB(price_level=form.price_level,city=form.city,open=form.open,
+            options=form.options,description=form.description,)
+        db.add(form_row)
+        db.flush()
+        form_id = form_row.id
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(500, f"Insertion du formulaire impossible: {e}")
+
 
     anchors = getattr(app.state, "ANCHORS", None)
     X_df, gains_proxy = build_item_features_df(df=df,form=form.model_dump(),sent_model=app.state.SENT_MODEL,
@@ -206,26 +217,33 @@ def predict(form: schema.Form, k: int = 10, use_ml: bool = True, user_id: int = 
     order = np.argsort(scores)[::-1]
     sel = order[:k]
 
-    items: List[schema.PredictionItem] = []
+    latency_ms = int((time.perf_counter() - t0) * 1000)
+    model_version = os.getenv("MODEL_VERSION") or getattr(app.state, "MODEL_VERSION", None) or "dev"
+
+    pred_row = models.Prediction(form_id=form_id,k=k,model_version=model_version,latency_ms=latency_ms,status="ok",)
+    if hasattr(models.Prediction, "user_id"):
+        setattr(pred_row, "user_id", user_id)
+
+    pred_row.items = []
     for r, i in enumerate(sel, start=1):
         etab_id = int(df.iloc[i]["id_etab"]) if "id_etab" in df.columns else int(i)
-        items.append(schema.PredictionItem(id=None,prediction_id=None,rank=r,etab_id=etab_id,score=float(scores[i]),))
-
-    latency_ms = int((time.perf_counter() - t0) * 1000)
-    model_version = os.getenv("MODEL_VERSION") or getattr(app.state, "MODEL_VERSION", None)
-
-    resp = schema.Prediction(id=None,form_id=None,k=k,model_version=model_version,latency_ms=latency_ms,
-        status="ok",items=items)
-
-    form_dict = form.model_dump()
+        pred_row.items.append(models.PredictionItem(rank=r,etab_id=etab_id,score=float(scores[i]),))
 
     try:
-        CRUD.log_prediction_event(prediction=resp,form_dict=form_dict,scores=np.asarray(scores, dtype=float),
-            used_ml=used_ml,latency_ms=latency_ms,model_version=model_version,)
+        db.add(pred_row)
+        db.commit()
+        db.refresh(pred_row)
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(500, f"Insertion de la prédiction impossible: {e}")
+
+    try:
+        CRUD.log_prediction_event(prediction=schema.Prediction.model_validate(pred_row),form_dict=form.model_dump(),
+            scores=np.asarray(scores, dtype=float),used_ml=used_ml,latency_ms=latency_ms,model_version=model_version,)
     except Exception as e:
         print(f"[mlflow] log_prediction_event failed: {e}")
 
-    return resp
+    return schema.Prediction.model_validate(pred_row)
 
 @app.post("/feedback", response_model=schema.FeedbackOut, tags=["monitoring"])
 def submit_feedback(payload: schema.FeedbackIn,sub: str = Depends(CRUD.get_current_subject),
