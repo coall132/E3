@@ -175,28 +175,26 @@ def issue_token(API_key_in: Optional[str] = Security(api_key_header), db: Sessio
     return schema.TokenOut(access_token=token, expires_at=exp_ts)
 
 @app.post("/predict", tags=["predict"], dependencies=[Depends(CRUD.get_current_subject)])
-def predict(form: schema.Form, k: int = 10, use_ml: bool = True,user_id: int = Depends(CRUD.current_user_id)):
+def predict(form: schema.Form, k: int = 10, use_ml: bool = True, user_id: int = Depends(CRUD.current_user_id)):
     t0 = time.perf_counter()
 
-    if not hasattr(app.state, "DF_CATALOG") or app.state.DF_CATALOG is None or app.state.DF_CATALOG.empty:
+    if not getattr(app.state, "DF_CATALOG", None) is not None or app.state.DF_CATALOG.empty:
         raise HTTPException(500, "Catalogue vide/non chargé.")
     df = app.state.DF_CATALOG
 
     anchors = getattr(app.state, "ANCHORS", None)
-    X_df, gains_proxy = build_item_features_df(df=df,form=form.model_dump(),sent_model=app.state.SENT_MODEL, 
-        include_query_consts=True,anchors=anchors,                  )
+    X_df, gains_proxy = build_item_features_df(df=df,form=form.model_dump(),sent_model=app.state.SENT_MODEL,
+        include_query_consts=True,anchors=anchors,)
 
     used_ml = False
     scores = gains_proxy.copy()
 
     if use_ml and getattr(app.state, "ML_MODEL", None) is not None and getattr(app.state, "PREPROC", None) is not None:
-        feature_cols = getattr(app.state, "FEATURE_COLS", None)
-        if feature_cols is None:
-            feature_cols = [c for c in X_df.columns if c != "id_etab"]
-            app.state.FEATURE_COLS = feature_cols
+        feature_cols = getattr(app.state, "FEATURE_COLS", None) or [c for c in X_df.columns if c != "id_etab"]
+        app.state.FEATURE_COLS = feature_cols
 
         X_df_aligned = utils._align_df_to_cols(X_df.copy(), feature_cols)
-        X_sp = app.state.PREPROC.transform(X_df_aligned) 
+        X_sp = app.state.PREPROC.transform(X_df_aligned)
         X = X_sp.toarray().astype(np.float32) if hasattr(X_sp, "toarray") else np.asarray(X_sp, dtype=np.float32)
         scores = utils._predict_scores(app.state.ML_MODEL, X)
         used_ml = True
@@ -208,14 +206,23 @@ def predict(form: schema.Form, k: int = 10, use_ml: bool = True,user_id: int = D
     items: List[schema.PredictionItem] = []
     for r, i in enumerate(sel, start=1):
         etab_id = int(df.iloc[i]["id_etab"]) if "id_etab" in df.columns else int(i)
-        items.append(schema.PredictionItem(id=None,prediction_id=None,  rank=r,
-                etab_id=etab_id,score=float(scores[i]),))
+        items.append(schema.PredictionItem(id=None,prediction_id=None,rank=r,etab_id=etab_id,score=float(scores[i]),))
 
     latency_ms = int((time.perf_counter() - t0) * 1000)
     model_version = os.getenv("MODEL_VERSION") or getattr(app.state, "MODEL_VERSION", None)
 
-    return schema.Prediction(id=None,form_id=None,k=k,model_version=model_version,latency_ms=latency_ms,
-        status="ok",items=items,)
+    resp = schema.Prediction(id=None,form_id=None,k=k,model_version=model_version,latency_ms=latency_ms,
+        status="ok",items=items)
+
+    form_dict = form.model_dump()
+
+    try:
+        CRUD.log_prediction_event(prediction=resp,form_dict=form_dict,scores=np.asarray(scores, dtype=float),
+            used_ml=used_ml,latency_ms=latency_ms,model_version=model_version,)
+    except Exception as e:
+        print(f"[mlflow] log_prediction_event failed: {e}")
+
+    return resp
 
 @app.post("/feedback", response_model=schema.FeedbackOut, tags=["monitoring"])
 def submit_feedback(payload: schema.FeedbackIn,sub: str = Depends(CRUD.get_current_subject),
@@ -227,18 +234,15 @@ def submit_feedback(payload: schema.FeedbackIn,sub: str = Depends(CRUD.get_curre
     if getattr(pred, "user_id", None) not in (None, user_id):
         raise HTTPException(status_code=403, detail="Cette prédiction n'appartient pas à l'utilisateur courant")
     
-    pred_item_id = None
-    if payload.etab_id is not None:
-        match = next((it for it in pred.items if it.etab_id == payload.etab_id), None)
-        if not match:
-            raise HTTPException(400, "etab_id non présent dans le top-k de cette prédiction")
-        pred_item_id = match.id
 
-    row = models.Feedback(prediction_id=pred.id,prediction_item_id=pred_item_id,etab_id=payload.etab_id,
-        rating=payload.rating,comment=payload.comment)
+    row = models.Feedback(prediction_id=pred.id,rating=payload.rating,comment=payload.comment)
     db.add(row); db.commit()
 
-    if getattr(app.state, "MLFLOW_RUN", None):
-        if payload.rating is not None: mlflow.log_metric("user_rating", int(payload.rating))
-        if payload.liked is not None:  mlflow.log_metric("user_liked", int(bool(payload.liked)))
+    try:
+        CRUD.log_feedback_rating(prediction_id=str(pred.id),rating=int(payload.rating),k=getattr(pred, "k", None),
+            model_version=getattr(pred, "model_version", None),user_id=user_id,comment=payload.comment,
+            use_active_run_if_any=True)
+    except Exception as e:
+        print(f"[mlflow] log_feedback_rating failed: {e}")
+
     return schema.FeedbackOut()

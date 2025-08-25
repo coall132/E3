@@ -12,6 +12,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import mlflow
+import io
 
 try:
     from . import models
@@ -183,29 +184,78 @@ def load_df():
         df_final_embed["rev_embeds"] = df_final_embed["rev_embeds"].apply(utils.to_list_np)
     return df_final_embed
 
-def log_prediction_mlflow(form, scores, sel_indices, df, used_ml, latency_ms, k):
-    if not getattr(app.state, "MLFLOW_RUN", None): 
+def _log_table_df(df: pd.DataFrame, path: str):
+    buf = io.StringIO()
+    df.to_csv(buf, index=False)
+    mlflow.log_text(buf.getvalue(), path)
+
+def log_prediction_event(prediction, form_dict, scores, used_ml: bool, latency_ms: int, model_version: str|None):
+    """
+    Log d'une requête d'inférence (une prédiction).
+    - prediction: instance schema.Prediction (avec .items)
+    - form_dict:  dict déjà nettoyé (pas d'info perso !)
+    - scores:     np.array des scores, aligné au DF catalogue
+    """
+    tags = {
+        "stage": "inference",
+        "endpoint": "/predict",
+        "prediction_id": str(prediction.id) if prediction.id else "na",
+        "model_version": model_version or "dev",
+        "used_ml": str(bool(used_ml)),
+    }
+    params = {
+        "k": int(prediction.k),
+    }
+    metrics = {
+         "latency_ms": float(latency_ms),
+    }
+
+    with mlflow.start_run(run_name=f"predict:{tags['prediction_id']}", nested=True, tags=tags) as run:
+        mlflow.log_params(params)
+        mlflow.log_metrics(metrics)
+        mlflow.log_dict(form_dict, "inputs/form.json")
+        topk_df = pd.DataFrame([{"rank": it.rank, "etab_id": it.etab_id, "score": it.score}for it in prediction.items])
+        _log_table_df(topk_df, "outputs/topk.csv")
+
+        return run.info.run_id
+
+def log_feedback_rating(prediction_id,rating,k= None,model_version= None,user_id= None,
+    comment=None,use_active_run_if_any= True,):
+    """
+    Log du feedback global (0..5) dans MLflow.
+    - Si un run est déjà actif (ex: ouvert pendant /predict) on log dedans.
+    - Sinon on crée un run *court* dédié au feedback (nested si possible).
+
+    Ne casse jamais l’API si MLflow n’est pas configuré.
+    """
+
+    rating = max(0, min(5, int(rating)))
+    tags = {
+        "stage": "feedback",
+        "endpoint": "/feedback",
+        "prediction_id": str(prediction_id),
+        "model_version": model_version or "dev",
+        "user_id": str(user_id) if user_id is not None else "na",
+    }
+    params = {"k_at_predict": int(k) if k is not None else None}
+    metrics = {
+        "user_rating": float(rating),
+        "user_rating_norm": float(rating) / 5.0,
+        "user_satisfied": 1.0 if rating >= 4 else 0.0,
+    }
+
+    # On ne stocke pas le commentaire en clair en tag (limites + privacy) :
+    if comment:
+        tags["feedback_comment_len"] = str(len(comment))
+
+    active_run = mlflow.active_run()
+    if use_active_run_if_any and active_run is not None:
+        mlflow.set_tags({k: v for k, v in tags.items() if v is not None})
+        mlflow.log_params({k: v for k, v in params.items() if v is not None})
+        mlflow.log_metrics(metrics)
         return
 
-    topk = []
-    for r, i in enumerate(sel_indices, start=1):
-        etab_id = int(df.iloc[i]["id_etab"]) if "id_etab" in df.columns else int(i)
-        topk.append({"rank": r, "etab_id": etab_id, "score": float(scores[i])})
-
-    mlflow.log_metrics({
-        "latency_ms": latency_ms,
-        "k": k,
-        "used_ml": int(bool(used_ml)),
-        "score_mean": float(np.mean(scores[sel_indices])),
-        "score_std": float(np.std(scores[sel_indices])),
-    })
-
-    if "code_postal" in df.columns:
-        div = len(set(df.iloc[sel_indices]["code_postal"].astype(str)))
-        mlflow.log_metric("diversity_cp", int(div))
-
-    artifact = {
-        "form": {k: v for k, v in form.items() if k in ("price_level","code_postal","options","open","description")},
-        "topk": topk
-    }
-    mlflow.log_dict(artifact, f"predictions/{int(time.time()*1000)}.json")
+    with mlflow.start_run(run_name=f"feedback:{prediction_id}", nested=True):
+        mlflow.set_tags({k: v for k, v in tags.items() if v is not None})
+        mlflow.log_params({k: v for k, v in params.items() if v is not None})
+        mlflow.log_metrics(metrics)

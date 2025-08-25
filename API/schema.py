@@ -48,8 +48,7 @@ class Prediction(BaseModel):
     items: List[PredictionItem] = []
 
 class FeedbackIn(BaseModel):
-    prediction_id: UUID
-    etab_id: Optional[int] = None    
+    prediction_id: UUID  
     rating: Optional[int] = None     
     comment: Optional[str] = None
 

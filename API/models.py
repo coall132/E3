@@ -100,10 +100,6 @@ class Feedback(Base):
 
     prediction_id = Column(UUID(as_uuid=True),ForeignKey("ml.prediction.id", ondelete="CASCADE"),
                            nullable=False, index=True)
-
-    prediction_item_id = Column(UUID(as_uuid=True),ForeignKey("ml.prediction_item.id", ondelete="SET NULL"),
-                                nullable=True, index=True)
-
-    etab_id = Column(Integer, nullable=True)  
+ 
     rating = Column(Integer, nullable=True)           
     comment = Column(Text, nullable=True)
