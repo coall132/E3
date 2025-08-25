@@ -1,7 +1,7 @@
 services:
   api:
     build:
-      context: ..
+      context: .
       dockerfile: ./API/Dockerfile
       target: prod
     container_name: api_ia
