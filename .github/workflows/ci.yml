@@ -40,16 +40,6 @@ jobs:
           API_STATIC_KEY: "coall"
           PYTHONPATH: ${{ github.workspace }} 
         run: pytest -q
-      
-      - name: Free disk space
-        uses: jlumbroso/free-disk-space@v1
-        with:
-          tool-cache: true
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          swap-storage: true
 
       # Build & Push vers Docker Hub (change l’org & ajoute secrets)
       - name: Set up QEMU
