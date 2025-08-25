@@ -1,19 +1,13 @@
-FROM python:3.9-slim
-
-# 2. Définir le répertoire de travail dans le conteneur
+FROM python:3.11-slim
 WORKDIR /app
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PIP_NO_CACHE_DIR=1
 
-# 3. Copier le fichier des dépendances et les installer
-COPY requirements_api.txt requirements_api.txt
-RUN pip install --upgrade pip
-RUN pip install --no-cache-dir -r requirements_api.txt
+# requirements dans API/ => chemin relatif au contexte (.)
+COPY ./API/requirements_api.txt /tmp/requirements.txt
+RUN pip install --upgrade pip && pip install --no-cache-dir -r /tmp/requirements.txt
 
-# 4. Copier tout le code de l'API dans le conteneur
-COPY . .
+# copier le code API/ sous /app/API pour garder l'import "API.main:app"
+COPY ./API /app/API
 
-# 5. Exposer le port sur lequel l'API va tourner
 EXPOSE 8000
-
-# 6. Commande pour lancer l'API avec Uvicorn au démarrage du conteneur
-#    --host 0.0.0.0 permet de rendre l'API accessible depuis l'extérieur du conteneur
-CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["uvicorn", "API.main:app", "--host", "0.0.0.0", "--port", "8000"]
