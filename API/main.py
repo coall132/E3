@@ -89,7 +89,7 @@ def warmup():
         ml = CRUD.load_ML()
         app.state.PREPROC = getattr(ml, "preproc", None)
         app.state.PREPROC_FACTORY = getattr(ml, "preproc_factory", None)
-        app.state.SENT_MODEL = getattr(ml, "sent_model", None) or DEFAULT_SENT_MODEL
+        app.state.SENT_MODEL = getattr(ml, "sent_model", None)
         app.state.ML_MODEL = getattr(ml, "rank_model", None)
         # utile pour tracer la version
         app.state.MODEL_VERSION = (

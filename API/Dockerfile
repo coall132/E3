@@ -18,7 +18,7 @@ FROM base AS prod
 
 # 1) Torch CPU (évite CUDA)
 RUN pip install --upgrade pip && \
-    pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.4.1
+    pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch==2.6.0
 
 # 2) Deps runtime
 COPY ./API/requirements_api.txt /tmp/requirements.txt

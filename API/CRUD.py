@@ -100,14 +100,11 @@ def current_user_id(subject: str = Depends(get_current_subject)) -> int:
     
 def load_ML():
     state = schema.MLState()
-    state.preproc = getattr(bm, "preproc", None)
-    state.preproc_factory = (
-        getattr(bm, "build_preproc", None) or
-        getattr(bm, "make_preproc", None)
-        )
+    state.preproc_factory = bm.make_preproc_final
     state.sent_model = getattr(bm, "model", None)
     if not (state.preproc or state.preproc_factory):
             raise RuntimeError("Aucun préprocesseur trouvé dans benchmark_3 (preproc ou build_preproc).")
+    
     path = os.getenv("RANK_MODEL_PATH", str(Path("artifacts") / "linear_svc_pointwise.joblib"))
     state.rank_model_path = path
     skip_rank = os.getenv("SKIP_RANK_MODEL", "0") == "1"

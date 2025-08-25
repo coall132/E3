@@ -101,7 +101,7 @@ def _align_df_to_cols(X_df: pd.DataFrame, feature_cols: List[str]):
             X_df[c] = 0.0
     return X_df[feature_cols]
 
-def _to_np1d(x):
+def to_np1d(x):
     if isinstance(x, np.ndarray):
         return x.astype(np.float32)
     if isinstance(x, list):
@@ -113,7 +113,7 @@ def _to_np1d(x):
             return None
     return None
 
-def _to_list_np(x):
+def to_list_np(x):
     if isinstance(x, list):
         out = []
         for e in x:
