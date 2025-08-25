@@ -12,6 +12,9 @@ jobs:
     permissions:
       contents: read
       packages: write
+    defaults:
+      run:
+        working-directory: API
 
     steps:
       - name: Checkout
