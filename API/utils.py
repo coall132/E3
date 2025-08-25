@@ -134,3 +134,12 @@ def _to_list_np(x):
         except Exception:
             return None
     return None
+
+
+class _StubSentModel:
+    """Petit modèle d'embedding de secours pour les tests / warmup désactivé."""
+    def encode(self, texts, normalize_embeddings=True, show_progress_bar=False):
+        if isinstance(texts, str):
+            texts = [texts]
+        # vecteur 4D arbitraire et léger
+        return [np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32) for _ in texts]

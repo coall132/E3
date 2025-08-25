@@ -69,7 +69,7 @@ api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)
 def warmup():
     if os.getenv("DISABLE_WARMUP", "0") == "1":
         app.state.DF_CATALOG = pd.DataFrame()
-        app.state.SENT_MODEL = DEFAULT_SENT_MODEL
+        app.state.SENT_MODEL = utils._StubSentModel()
         app.state.PREPROC = None
         app.state.ML_MODEL = None
         app.state.FEATURE_COLS = []
