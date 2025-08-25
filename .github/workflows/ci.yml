@@ -38,6 +38,7 @@ jobs:
         env:
           DISABLE_WARMUP: "1"
           API_STATIC_KEY: "coall"
+          PYTHONPATH: ${{ github.workspace }} 
         run: pytest -q
 
       # Build & Push vers Docker Hub (change l’org & ajoute secrets)
