@@ -30,13 +30,13 @@ try :
     W_eval,  
 )
 except :
-    import utils
-    import CRUD
+    from API import utils
+    from API import CRUD
     import models
-    import schema
-    from database import engine, get_db, SessionLocal
-    import benchmark_3 as bm
-    from benchmark_2_0 import (
+    from API import schema
+    from API.database import engine, get_db, SessionLocal
+    from API import benchmark_3 as bm
+    from API.benchmark_2_0 import (
     score_func,
     build_item_features_df,
     aggregate_gains,

@@ -22,13 +22,13 @@ try:
     from . import utils
     from .main import app
 except:
-    import models
-    import database as db
-    import schema
-    import benchmark_3 as bm
-    import utils
-    from main import app
-
+    from API import models
+    from API import database as db
+    from API import schema
+    from API import benchmark_3 as bm
+    from API import utils
+    from API.main import app  
+    
 api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)  # pour /auth/token uniquement
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 ph = PasswordHasher(time_cost=2, memory_cost=102400, parallelism=8)
