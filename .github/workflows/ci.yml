@@ -47,22 +47,7 @@ jobs:
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
-
-      - name: Compute image name (lowercased) & show planned tags
-        id: imagename
-        run: |
-          NS="${{ secrets.DOCKERHUB_USERNAME }}"
-          if [ -z "$NS" ]; then
-            echo "::error::DOCKERHUB_USERNAME secret is empty."
-            exit 1
-          fi
-          NS_LOWER="$(echo "$NS" | tr '[:upper:]' '[:lower:]')"
-          echo "IMAGE_NAME=${NS_LOWER}/restaurant-api" >> "$GITHUB_ENV"
-          echo "ns_lower=${NS_LOWER}" >> "$GITHUB_OUTPUT"
-          echo "Will push:"
-          echo " - ${NS_LOWER}/restaurant-api:latest"
-          echo " - ${NS_LOWER}/restaurant-api:${GITHUB_SHA}"
-
+ 
       - name: Login to DockerHub 
         if: github.ref == 'refs/heads/main'
         uses: docker/login-action@v3
@@ -70,10 +55,6 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
       
-      - name: Check Docker login (debug)
-        if: github.ref == 'refs/heads/main'
-        run: docker info 2>/dev/null | grep -i '^ Username' || true
-
       - name: Build and push
         if: github.ref == 'refs/heads/main'
         uses: docker/build-push-action@v6
@@ -82,4 +63,4 @@ jobs:
           file: ./API/Dockerfile   
           target: prod   
           push: true
-          tags: ${{ env.IMAGE_NAME }}:latest,${{ env.IMAGE_NAME }}:${{ github.sha }}
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/restaurant-api:latest,${{ secrets.DOCKERHUB_USERNAME }}/restaurant-api:${{ github.sha }}
