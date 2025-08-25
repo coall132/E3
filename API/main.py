@@ -40,7 +40,11 @@ except :
     score_func,
     build_item_features_df,
     aggregate_gains,
-    W_eval,  # ou W_proxy si tu préfères
+    W_eval,
+    model as DEFAULT_SENT_MODEL,
+    pick_anchors_from_df,
+    build_item_features_df,
+    make_preproc_final,
 )
 
 app = FastAPI(
@@ -60,10 +64,9 @@ app.add_middleware(
 API_STATIC_KEY = os.getenv("API_STATIC_KEY", "coall")
 api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)
 
+
 @app.on_event("startup")
 def warmup():
-    CRUD, DEFAULT_SENT_MODEL, pick_anchors_from_df, build_item_features_df, make_preproc_final = _late_imports()
-
     if os.getenv("DISABLE_WARMUP", "0") == "1":
         app.state.DF_CATALOG = pd.DataFrame()
         app.state.SENT_MODEL = DEFAULT_SENT_MODEL
