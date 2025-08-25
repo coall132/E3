@@ -79,3 +79,58 @@ def calculer_profil_ouverture(row, df_horaires, jours, creneaux):
                 profil[f"ouvert_{jour_nom}_{nom_creneau}"] = 1
                 
     return pd.Series(profil)
+
+def _predict_scores(model, X: np.ndarray) -> np.ndarray:
+    try:
+        s = model.decision_function(X)
+        return np.asarray(s, float).ravel()
+    except Exception:
+        pass
+    try:
+        proba = model.predict_proba(X)
+        proba = np.asarray(proba, float)
+        return (proba[:, 1] if proba.ndim == 2 and proba.shape[1] >= 2 else proba.max(axis=1))
+    except Exception:
+        pass
+    pred = model.predict(X)
+    return np.asarray(pred, float).ravel()
+
+def _align_df_to_cols(X_df: pd.DataFrame, feature_cols: List[str]):
+    for c in feature_cols:
+        if c not in X_df.columns:
+            X_df[c] = 0.0
+    return X_df[feature_cols]
+
+def _to_np1d(x):
+    if isinstance(x, np.ndarray):
+        return x.astype(np.float32)
+    if isinstance(x, list):
+        return np.asarray(x, dtype=np.float32)
+    if isinstance(x, str) and x.strip().startswith("["):
+        try:
+            return np.asarray(json.loads(x), dtype=np.float32)
+        except Exception:
+            return None
+    return None
+
+def _to_list_np(x):
+    if isinstance(x, list):
+        out = []
+        for e in x:
+            if isinstance(e, np.ndarray):
+                out.append(e.astype(np.float32))
+            elif isinstance(e, list):
+                out.append(np.asarray(e, dtype=np.float32))
+            elif isinstance(e, str) and e.strip().startswith("["):
+                try:
+                    out.append(np.asarray(json.loads(e), dtype=np.float32))
+                except Exception:
+                    pass
+        return out if out else None
+    if isinstance(x, str) and x.strip().startswith("["):
+        try:
+            L = json.loads(x)
+            return [np.asarray(e, dtype=np.float32) for e in L]
+        except Exception:
+            return None
+    return None

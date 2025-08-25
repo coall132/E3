@@ -167,4 +167,9 @@ def load_df():
     df_final=pd.merge(etab_features,options_features,on="id_etab",how='left')
     df_final=pd.merge(df_final,horaire_features,on="id_etab",how='left')
     df_final_embed=pd.merge(df_final,df_embed,on="id_etab",how='left')
+    if "desc_embed" in df_final_embed.columns:
+        df_final_embed["desc_embed"] = df_final_embed["desc_embed"].apply(utils.to_np1d)
+    if "rev_embeds" in df_final_embed.columns:
+        df_final_embed["rev_embeds"] = df_final_embed["rev_embeds"].apply(utils.to_list_np)
     return df_final_embed
+    
