@@ -6,7 +6,7 @@ from testcontainers.postgres import PostgresContainer
 from fastapi.testclient import TestClient
 import pytest
 
-def test_create_api_key_success(client):
+def test_create_api_key_success(client): 
     info = {
         "email": "alice@example.com",
         "username": "alice",
