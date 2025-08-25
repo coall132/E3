@@ -7,9 +7,9 @@ from fastapi.testclient import TestClient
 
 os.environ.setdefault("DISABLE_WARMUP", "1")
 
-import main
-import models
-from database import Base
+from API import main
+from API import models
+from API.database import Base
 
 def _sqlite_session_override():
     engine = sa.create_engine("sqlite:///:memory:", connect_args={"check_same_thread": False})
