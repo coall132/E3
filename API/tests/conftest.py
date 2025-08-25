@@ -4,7 +4,7 @@ os.environ.setdefault("DISABLE_WARMUP", "1")  # avant tout import de main/app
 import pytest
 import numpy as np
 import pandas as pd
-from sqlalchemy import create_engine, Table, Column, Integer, Text
+from sqlalchemy import create_engine, Table, Column, Integer, Text, text
 from sqlalchemy.orm import sessionmaker
 from fastapi.testclient import TestClient
 from testcontainers.postgres import PostgresContainer
@@ -23,15 +23,6 @@ except ImportError:
     import API.CRUD as CRUD
     from API.benchmark_2_0 import pick_anchors_from_df
 
-
-class _StubSentModel:
-    """Stub d'embedding pour éviter de charger un gros modèle pendant les tests."""
-    def encode(self, texts, normalize_embeddings=True, show_progress_bar=False):
-        if isinstance(texts, str):
-            texts = [texts]
-        return [np.array([0.1, 0.2, 0.3, 0.4], dtype=np.float32) for _ in texts]
-
-
 def _ensure_min_tables():
     # Table minimale si ton metadata ne la déclare pas déjà
     Table(
@@ -42,6 +33,13 @@ def _ensure_min_tables():
         extend_existing=True,
     )
 
+class _StubSentModel:
+    """Petit modèle d'embedding de secours pour les tests / warmup désactivé."""
+    def encode(self, texts, normalize_embeddings=True, show_progress_bar=False):
+        if isinstance(texts, str):
+            texts = [texts]
+        # vecteur 4D arbitraire et léger
+        return [np.array([0.0, 0.0, 0.0, 0.0], dtype=np.float32) for _ in texts]
 
 # ---------- DB container (intégration) ----------
 @pytest.fixture(scope="session")
@@ -58,14 +56,21 @@ def engine(pg_container):
     )
     eng = create_engine(url, pool_pre_ping=True)
 
-    # si tu as une fonction utilitaire pour créer un schéma ML
+    with eng.begin() as conn:
+        conn.execute(text("CREATE SCHEMA IF NOT EXISTS user_base"))
+        conn.execute(text("CREATE SCHEMA IF NOT EXISTS ml"))
+
     if hasattr(models, "ensure_ml_schema"):
-        models.ensure_ml_schema(eng)
+        try:
+            models.ensure_ml_schema(eng)
+        except Exception:
+            # tolérant si déjà fait
+            pass
 
     _ensure_min_tables()
     models.Base.metadata.create_all(bind=eng)
-    yield eng
 
+    yield eng
 
 @pytest.fixture()
 def db_session(engine):
