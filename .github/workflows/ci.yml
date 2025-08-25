@@ -48,12 +48,33 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Validate DockerHub namespace & tags
+        run: |
+          NS="${{ toLower(secrets.DOCKERHUB_USERNAME) }}"
+          echo "DockerHub namespace (lowercased): $NS"
+          if [ -z "$NS" ]; then
+            echo "::error::DOCKERHUB_USERNAME secret is empty."
+            exit 1
+          fi
+          # Vérifie que c'est bien en minuscules
+          if [ "$NS" != "$(echo "$NS" | tr '[:upper:]' '[:lower:]')" ]; then
+            echo "::error::DOCKERHUB_USERNAME doit être en minuscules."
+            exit 1
+          fi
+          echo "Will push tags:"
+          echo " - ${NS}/restaurant-api:latest"
+          echo " - ${NS}/restaurant-api:${GITHUB_SHA}"
+
       - name: Login to DockerHub
         if: github.ref == 'refs/heads/main'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      
+      - name: Check Docker login (debug)
+        if: github.ref == 'refs/heads/main'
+        run: docker info 2>/dev/null | grep -i '^ Username' || true
 
       - name: Build and push
         if: github.ref == 'refs/heads/main'
@@ -63,4 +84,4 @@ jobs:
           file: ./API/Dockerfile   
           target: prod   
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/restaurant-api:latest,${{ secrets.DOCKERHUB_USERNAME }}/restaurant-api:${{ github.sha }}
+          tags: ${{ env.IMAGE_NAME }}:latest,${{ env.IMAGE_NAME }}:${{ github.sha }}
