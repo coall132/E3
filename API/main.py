@@ -22,7 +22,6 @@ try :
     from . import models
     from . import schema
     from .database import engine, get_db, SessionLocal
-    from . import benchmark_3 as bm
     from .benchmark_2_0 import (
     score_func,
     build_item_features_df,
@@ -35,7 +34,6 @@ except :
     import models
     from API import schema
     from API.database import engine, get_db, SessionLocal
-    from API import benchmark_3 as bm
     from API.benchmark_2_0 import (
     score_func,
     build_item_features_df,

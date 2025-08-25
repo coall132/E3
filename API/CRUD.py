@@ -18,14 +18,14 @@ try:
     from . import models
     from . import database
     from . import schema
-    from . import benchmark_3 as bm
+    from . import benchmark_2_0 as bm
     from . import utils
     from .main import app
 except:
     from API import models
     from API import database as db
     from API import schema
-    from API import benchmark_3 as bm
+    from API import benchmark_2_0 as bm
     from API import utils
 
 api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)  # pour /auth/token uniquement
