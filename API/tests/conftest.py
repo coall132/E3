@@ -17,11 +17,11 @@ try:
     import API.CRUD as CRUD
     from API.benchmark_2_0 import pick_anchors_from_df
 except ImportError:
-    import models as models
-    import database as db
-    from main import app as fastapi_app
-    import CRUD as CRUD
-    from benchmark_2_0 import pick_anchors_from_df
+    from API import models
+    from API import database as db
+    from API.main import app as fastapi_app
+    import API.CRUD as CRUD
+    from API.benchmark_2_0 import pick_anchors_from_df
 
 
 class _StubSentModel:
