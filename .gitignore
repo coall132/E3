@@ -222,3 +222,4 @@ API/.ruff_cache/
 API/artifacts/
 API/data/
 *.ipynb
+test.py

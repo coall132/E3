@@ -9,7 +9,10 @@ from sqlalchemy.orm import declarative_base, relationship
 from sqlalchemy.sql import text
 from sqlalchemy import Column, Integer, TIMESTAMP, func, ForeignKey
 
-Base = declarative_base()
+try:
+    from .database import Base
+except:
+    from API.database import Base
 
 def ensure_ml_schema(engine):
     with engine.connect() as conn:

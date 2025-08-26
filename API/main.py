@@ -66,6 +66,12 @@ app.add_middleware(
 API_STATIC_KEY = os.getenv("API_STATIC_KEY", "coall")
 api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)
 
+from API import models
+from API.database import engine
+
+models.ensure_ml_schema(engine)
+models.Base.metadata.create_all(bind=engine)
+
 
 @app.on_event("startup")
 def warmup():
