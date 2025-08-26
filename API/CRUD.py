@@ -105,7 +105,7 @@ def load_ML():
     if not (state.preproc or state.preproc_factory):
             raise RuntimeError("Aucun préprocesseur trouvé dans benchmark_3 (preproc ou build_preproc).")
     
-    path = os.getenv("RANK_MODEL_PATH", str(Path("artifacts") / "linear_svc_pointwise.joblib"))
+    path = os.getenv("RANK_MODEL_PATH", None)
     state.rank_model_path = path
     skip_rank = os.getenv("SKIP_RANK_MODEL", "0") == "1"
     if not skip_rank and Path(path).exists():
