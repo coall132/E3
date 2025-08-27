@@ -7,6 +7,7 @@ import numpy as np
 import mlflow
 from mlflow.tracking import MlflowClient
 
+RETRY_SEC = int(os.getenv("MLFLOW_RETRY_SEC", "5"))
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
 MLFLOW_EXPERIMENT = os.getenv("MLFLOW_EXPERIMENT", "restaurant-api")
 DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL")
@@ -24,9 +25,28 @@ ALERT_COOLDOWN_SEC = int(os.getenv("ALERT_COOLDOWN_SEC", "600")) # anti-spam: 10
 # petit état en mémoire
 _last_alert_sent = {"latency": 0, "rating": 0}
 
+def wait_for_mlflow(uri: str, experiment: str) -> tuple[MlflowClient, str]:
+    """Boucle jusqu'à ce que MLflow réponde; crée l'expérience si besoin."""
+    mlflow.set_tracking_uri(uri)
+    client = MlflowClient(tracking_uri=uri)
+    while True:
+        try:
+            exp = client.get_experiment_by_name(experiment)
+            if exp is None:
+                exp_id = client.create_experiment(experiment)
+                print(f"[monitor] experiment '{experiment}' created id={exp_id}", flush=True)
+            else:
+                exp_id = exp.experiment_id
+            print(f"[monitor] MLflow OK at {uri} | experiment_id={exp_id}", flush=True)
+            return client, exp_id
+        except Exception as e:
+            print(f"[monitor] MLflow unreachable at {uri}: {e} — retry in {RETRY_SEC}s", flush=True)
+            time.sleep(RETRY_SEC)
+
 def send_discord_alert(title: str, message: str, fields: dict | None = None):
     if not DISCORD_WEBHOOK_URL:
         return
+    
     payload = {
         "embeds": [{
             "title": title,
@@ -74,49 +94,42 @@ def log_monitor_metrics_to_mlflow(lat_ma10: float | None, rating_ma10: float | N
             mlflow.log_metric("user_rating_ma10", float(rating_ma10))
 
 def main_loop():
-    mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
-    client = MlflowClient(tracking_uri=MLFLOW_TRACKING_URI)
-    exp_id = get_or_create_experiment_id(client, MLFLOW_EXPERIMENT)
+    print(f"[monitor] boot with MLFLOW_TRACKING_URI={MLFLOW_TRACKING_URI} exp={MLFLOW_EXPERIMENT}", flush=True)
+    client, exp_id = wait_for_mlflow(MLFLOW_TRACKING_URI, MLFLOW_EXPERIMENT)
 
     while True:
         try:
-            # 1) latence moyenne des 10 dernières prédictions
             lat_vals = fetch_last_n_metric(client, exp_id, stage_tag="inference",
                                            metric_name="latency_ms", n=LAT_AVG_N)
             lat_ma = float(np.mean(lat_vals)) if lat_vals else None
 
-            # 2) note moyenne des 10 derniers feedbacks
             rating_vals = fetch_last_n_metric(client, exp_id, stage_tag="feedback",
                                               metric_name="user_rating", n=RATING_AVG_N)
             rating_ma = float(np.mean(rating_vals)) if rating_vals else None
 
-            # (optionnel) loguer ces moyennes dans MLflow pour avoir les courbes MA(10)
             log_monitor_metrics_to_mlflow(lat_ma, rating_ma)
 
             now = time.time()
-
-            # Règle A: latence > seuil
             if lat_ma is not None and lat_ma > LAT_THRESHOLD_MS:
                 if now - _last_alert_sent["latency"] > ALERT_COOLDOWN_SEC:
-                    send_discord_alert(
-                        "🚨 Latence élevée",
+                    send_discord_alert("🚨 Latence élevée",
                         f"Latence moyenne des {LAT_AVG_N} dernières requêtes = {lat_ma:.0f} ms (> {LAT_THRESHOLD_MS} ms).",
-                        {"MLflow exp": MLFLOW_EXPERIMENT}
-                    )
+                        {"MLflow exp": MLFLOW_EXPERIMENT})
                     _last_alert_sent["latency"] = now
 
-            # Règle B: satisfaction < seuil
             if rating_ma is not None and rating_ma < RATING_MIN_THRESHOLD:
                 if now - _last_alert_sent["rating"] > ALERT_COOLDOWN_SEC:
-                    send_discord_alert(
-                        "🚨 Satisfaction en baisse",
+                    send_discord_alert("🚨 Satisfaction en baisse",
                         f"Note moyenne des {RATING_AVG_N} derniers feedbacks = {rating_ma:.2f} (< {RATING_MIN_THRESHOLD}).",
-                        {"MLflow exp": MLFLOW_EXPERIMENT}
-                    )
+                        {"MLflow exp": MLFLOW_EXPERIMENT})
                     _last_alert_sent["rating"] = now
 
+            print(f"[monitor] lat_vals={lat_vals} -> MA={lat_ma}", flush=True)
+            print(f"[monitor] rating_vals={rating_vals} -> MA={rating_ma}", flush=True)
+            print("[monitor] tick OK", flush=True)
+
         except Exception as e:
-            print(f"[monitor] error: {e}")
+            print(f"[monitor] error: {e}", flush=True)
 
         time.sleep(CHECK_INTERVAL_SEC)
 

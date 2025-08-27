@@ -11,45 +11,85 @@ services:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_HOST: postgres  
+      POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_EXPERIMENT: restaurant-api
+    networks:
+      - data_network
+
+  # Crée le bucket s’il n’existe pas
+  minio-init:
+    image: minio/mc
+    depends_on: []
+    entrypoint: >
+      sh -lc "
+        until (mc alias set myminio http://minio:9000 ${AWS_ACCESS_KEY_ID} ${AWS_SECRET_ACCESS_KEY}); do echo 'waiting for minio...'; sleep 2; done;
+        mc mb -p myminio/mlflow-artifacts || true;
+        mc ls myminio;
+      "
     networks:
       - data_network
 
   mlflow:
     image: ghcr.io/mlflow/mlflow:latest
+    container_name: mlflow
     environment:
-      MLFLOW_S3_ENDPOINT_URL: http://minio:9000  
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_HOST: postgres                  
+      POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
-    command:
-      - mlflow
-      - server
-      - --host
-      - 0.0.0.0
-      - --port
-      - "5000"
-      - --backend-store-uri
-      - postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}
-      - --default-artifact-root
-      - s3://mlflow-artifacts/
+      # >>> Force uvicorn à binder partout
+      MLFLOW_SERVER_HOST: 0.0.0.0
+      MLFLOW_SERVER_PORT: 5000
+    command: >
+      bash -lc "
+        set -e
+        apt-get update &&
+        apt-get install -y --no-install-recommends postgresql-client curl &&
+        rm -rf /var/lib/apt/lists/* &&
+        pip install --no-cache-dir psycopg2-binary &&
+        echo 'DNS check (postgres):' && getent hosts postgres || true &&
+        echo 'Waiting for Postgres at postgres:5432 ...' &&
+        until psql 'postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable' -c 'SELECT 1' >/dev/null 2>&1; do
+          echo 'waiting for postgres...'; sleep 2;
+        done &&
+        echo 'Waiting for MinIO...' &&
+        until curl -fsS http://minio:9000/minio/health/ready >/dev/null; do
+          echo 'waiting for minio...'; sleep 2;
+        done &&
+        exec mlflow server
+          --host 0.0.0.0
+          --port 5000
+          --serve-artifacts
+          --backend-store-uri postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+          --default-artifact-root s3://mlflow-artifacts/
+      "
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:5000/ >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 60
+      start_period: 5s
     ports:
       - "5001:5000"
+    restart: unless-stopped
     networks:
       - data_network
 
+
   monitor:
     image: python:3.11-slim
-    working_dir: /app
+    working_dir: /app/API
     command: bash -lc "pip install mlflow requests numpy && python monitor/monitor_ia.py"
     volumes:
-      - ./monitor:/app/monitor:ro
+      - ./API/monitor:/app/API/monitor:ro
     environment:
+      PYTHONUNBUFFERED: "1"
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLFLOW_EXPERIMENT: restaurant-api
       DISCORD_WEBHOOK_URL: ${DISCORD_WEBHOOK_URL}
@@ -57,13 +97,14 @@ services:
       LAT_THRESHOLD_MS: "10000"
       RATING_AVG_N: "10"
       RATING_MIN_THRESHOLD: "1.0"
-      CHECK_INTERVAL_SEC: "60"
-      ALERT_COOLDOWN_SEC: "600"
+      CHECK_INTERVAL_SEC: "5"
+      ALERT_COOLDOWN_SEC: "10"
     depends_on:
-      - mlflow
+      mlflow:
+        condition: service_healthy
     networks:
       - data_network
 
 networks:
   data_network:
-    external: true   
+    external: true

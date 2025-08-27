@@ -29,7 +29,7 @@ try:
 except:
     import CRUD
 
-model = SentenceTransformer('BAAI/bge-m3')
+"""model = SentenceTransformer('BAAI/bge-m3')"""
 
 W_proxy = {'price':0.18,'rating':0.14,'options':0.14,'text':0.28,'city':0.04,'open':0.04}
 W_eval  = {'price':0.12,'rating':0.18,'options':0.12,'text':0.22,'city':0.20,'open':0.16}

@@ -2,6 +2,7 @@ pydantic
 fastapi
 uvicorn[standard]
 psycopg2-binary
+psycopg2
 sqlalchemy
 python-jose[cryptography]
 argon2-cffi==23.1.0

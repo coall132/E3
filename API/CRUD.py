@@ -3,7 +3,7 @@ import secrets, base64, time
 from jose import JWTError, jwt
 from fastapi.security import OAuth2PasswordBearer, APIKeyHeader
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 import os
 from fastapi import FastAPI, Depends, HTTPException, Security, status, Query
 from argon2 import PasswordHasher, exceptions as argon_exc
@@ -11,7 +11,8 @@ from pathlib import Path
 import joblib
 import numpy as np
 import pandas as pd
-import mlflow
+import os, mlflow
+from mlflow.tracking import MlflowClient
 import io
 
 try:
@@ -102,6 +103,7 @@ def load_ML():
     state = schema.MLState()
     state.preproc_factory = bm.make_preproc_final
     state.sent_model = getattr(bm, "model", None)
+
     if not (state.preproc or state.preproc_factory):
             raise RuntimeError("Aucun préprocesseur trouvé dans benchmark_3 (preproc ou build_preproc).")
     
@@ -185,6 +187,24 @@ def _log_table_df(df: pd.DataFrame, path: str):
     df.to_csv(buf, index=False)
     mlflow.log_text(buf.getvalue(), path)
 
+def _ensure_mlflow():
+    global _MLFLOW_READY
+    if _MLFLOW_READY:
+        return True
+    uri = os.getenv("MLFLOW_TRACKING_URI")
+    exp = os.getenv("MLFLOW_EXPERIMENT", "restaurant-api")
+    if not uri:
+        return False
+    try:
+        mlflow.set_tracking_uri(uri)
+        client = MlflowClient(tracking_uri=uri)
+        if client.get_experiment_by_name(exp) is None:
+            client.create_experiment(exp)
+        _MLFLOW_READY = True
+        return True
+    except Exception:
+        return False
+    
 def log_prediction_event(prediction, form_dict, scores, used_ml: bool, latency_ms: int, model_version: str|None):
     """
     Log d'une requête d'inférence (une prédiction).
@@ -205,7 +225,8 @@ def log_prediction_event(prediction, form_dict, scores, used_ml: bool, latency_m
     metrics = {
          "latency_ms": float(latency_ms),
     }
-
+    if not _ensure_mlflow():
+        return
     with mlflow.start_run(run_name=f"predict:{tags['prediction_id']}", nested=True, tags=tags) as run:
         mlflow.log_params(params)
         mlflow.log_metrics(metrics)
@@ -239,7 +260,8 @@ def log_feedback_rating(prediction_id,rating,k= None,model_version= None,user_id
         "user_rating_norm": float(rating) / 5.0,
         "user_satisfied": 1.0 if rating >= 4 else 0.0,
     }
-
+    if not _ensure_mlflow():
+        return
     # On ne stocke pas le commentaire en clair en tag (limites + privacy) :
     if comment:
         tags["feedback_comment_len"] = str(len(comment))
@@ -255,3 +277,175 @@ def log_feedback_rating(prediction_id,rating,k= None,model_version= None,user_id
         mlflow.set_tags({k: v for k, v in tags.items() if v is not None})
         mlflow.log_params({k: v for k, v in params.items() if v is not None})
         mlflow.log_metrics(metrics)
+
+_PRICE_MAP_STR_TO_INT = {
+    "PRICE_LEVEL_INEXPENSIVE": 1,
+    "PRICE_LEVEL_MODERATE": 2,
+    "PRICE_LEVEL_EXPENSIVE": 3,
+    "PRICE_LEVEL_VERY_EXPENSIVE": 4,
+}
+_DAY_FR = {
+    1: "Lundi",
+    2: "Mardi",
+    3: "Mercredi",
+    4: "Jeudi",
+    5: "Vendredi",
+    6: "Samedi",
+    0: "Dimanche",   # NOTE: cohérent avec ton mapping existant {0: dimanche, 1: lundi, ...}
+}
+_DAY_ORDER = [1, 2, 3, 4, 5, 6, 0]  # Lundi → Dimanche
+
+_OPTION_BOOL_COLS = (
+    "allowsDogs", "delivery", "goodForChildren", "goodForGroups",
+    "goodForWatchingSports", "outdoorSeating", "reservable", "restroom",
+    "servesVegetarianFood", "servesBrunch", "servesBreakfast",
+    "servesDinner", "servesLunch",
+)
+
+def _price_to_int_and_symbol(v: Optional[str | int | float]) -> (Optional[int], Optional[str]):
+    """
+    Convertit priceLevel en (niveau_int, symbole €), si possible.
+    Accepte déjà un entier/float ou une constante texte PRICE_LEVEL_*.
+    """
+    if v is None:
+        return None, None
+    if isinstance(v, (int, float)):
+        lvl = int(v)
+        if 1 <= lvl <= 4:
+            return lvl, "€" * lvl
+        return lvl, None
+    s = str(v).strip()
+    if s in _PRICE_MAP_STR_TO_INT:
+        lvl = _PRICE_MAP_STR_TO_INT[s]
+        return lvl, "€" * lvl
+    # parfois stocké comme "$", "$$", ...
+    if set(s) == {"$"}:
+        lvl = len(s)
+        return lvl, "€" * lvl
+    # fallback
+    try:
+        lvl = int(s)
+        return lvl, ("€" * lvl) if 1 <= lvl <= 4 else None
+    except ValueError:
+        return None, None
+
+def _fmt_time(hour: Optional[int], minute: Optional[int]) -> Optional[str]:
+    if hour is None or minute is None:
+        return None
+    if minute == 0:
+        return f"{hour}h"
+    return f"{hour}h{minute:02d}"
+
+def _build_horaires(periods: List[models.OpeningPeriod]) -> List[str]:
+    """
+    Construit des lignes 'Jour 10h–19h, 20h–22h'…
+    Ignore les périodes qui traversent le jour (open_day != close_day) pour rester simple,
+    comme dans ton code précédent.
+    """
+    by_day: Dict[int, List[str]] = {k: [] for k in _DAY_ORDER}
+    for p in periods or []:
+        if p.open_day is None or p.close_day is None:
+            continue
+        if p.open_day != p.close_day:
+            # simplification (même logique que ton code de profil): on ignore les spans multi-jours
+            continue
+        t1 = _fmt_time(p.open_hour, p.open_minute)
+        t2 = _fmt_time(p.close_hour, p.close_minute)
+        if t1 and t2:
+            by_day[p.open_day].append(f"{t1}–{t2}")
+
+    lines = []
+    for d in _DAY_ORDER:
+        nom = _DAY_FR.get(d, f"Jour{d}")
+        if by_day[d]:
+            lines.append(f"{nom}\t{', '.join(by_day[d])}")
+        else:
+            lines.append(f"{nom}\tFermé")
+    return lines
+
+def _options_true_list(opt: Optional[models.Options]) -> List[str]:
+    if not opt:
+        return []
+    out = []
+    for c in _OPTION_BOOL_COLS:
+        if getattr(opt, c, None) is True:
+            out.append(c)
+    return out
+
+def get_etablissement_details(db: Session, id_etab: int) -> Dict[str, Any]:
+    """
+    Retourne un JSON avec:
+      - nom, adresse, description/editorialSummary_text
+      - rating, priceLevel (int + symbole), start_price
+      - téléphone, site, géoloc
+      - options_actives: noms des colonnes options à True
+      - horaires: liste de 7 lignes "Jour\t(plages ou Fermé)" en FR
+    """
+    etab = (
+        db.query(models.Etablissement)
+        .options(
+            selectinload(models.Etablissement.options),
+            selectinload(models.Etablissement.opening_periods),
+        )
+        .filter(models.Etablissement.id_etab == id_etab)
+        .first()
+    )
+    if not etab:
+        return {"error": "etablissement introuvable", "id_etab": id_etab}
+
+    lvl_int, lvl_sym = _price_to_int_and_symbol(etab.priceLevel)
+
+    desc = etab.editorialSummary_text or etab.description
+
+    payload: Dict[str, Any] = {
+        "id_etab": etab.id_etab,
+        "nom": etab.nom,
+        "adresse": etab.adresse,
+        "telephone": etab.internationalPhoneNumber,
+        "site_web": etab.websiteUri,
+        "description": desc,
+        "rating": etab.rating,
+        "priceLevel": lvl_int,         # niveau numérique si possible (1..4)
+        "priceLevel_symbole": lvl_sym, # "€", "€€", ...
+        "startPrice": etab.start_price,
+        "endPrice": etab.end_price,
+        "geo": {"lat": etab.latitude, "lng": etab.longitude},
+        "options_actives": _options_true_list(etab.options),
+        "horaires": _build_horaires(etab.opening_periods or []),
+    }
+    return payload
+
+def get_etablissements_details_bulk(db: Session, ids: list[int]) -> dict[int, dict]:
+    if not ids:
+        return {}
+
+    rows = (
+        db.query(models.Etablissement)
+        .options(
+            selectinload(models.Etablissement.options),
+            selectinload(models.Etablissement.opening_periods),
+        )
+        .filter(models.Etablissement.id_etab.in_(ids))
+        .all()
+    )
+    out = {}
+    for etab in rows:
+        lvl_int, lvl_sym = _price_to_int_and_symbol(etab.priceLevel)
+        desc = etab.editorialSummary_text or etab.description
+        out[etab.id_etab] = {
+            "id_etab": etab.id_etab,
+            "nom": etab.nom,
+            "adresse": etab.adresse,
+            "telephone": etab.internationalPhoneNumber,
+            "site_web": etab.websiteUri,
+            "description": desc,
+            "rating": etab.rating,
+            "priceLevel": lvl_int,
+            "priceLevel_symbole": lvl_sym,
+            "startPrice": etab.start_price,
+            "endPrice": etab.end_price,
+            "geo": {"lat": etab.latitude, "lng": etab.longitude},
+            "options_actives": _options_true_list(etab.options),
+            "horaires": _build_horaires(etab.opening_periods or []),
+        }
+    return out
