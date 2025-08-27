@@ -32,51 +32,57 @@ services:
       - data_network
 
   mlflow:
-    image: ghcr.io/mlflow/mlflow:latest
+    image: python:3.11-slim
     container_name: mlflow
     environment:
-      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      # --- tracking store (Postgres)
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
-      # >>> Force uvicorn à binder partout
-      MLFLOW_SERVER_HOST: 0.0.0.0
-      MLFLOW_SERVER_PORT: 5000
+      # --- artifacts (MinIO/S3)
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
+      # --- mlflow server config via ENV (utilisées par mlflow.server:app)
+      MLFLOW_BACKEND_STORE_URI: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      MLFLOW_ARTIFACTS_DESTINATION: s3://mlflow-artifacts/
+      MLFLOW_SERVE_ARTIFACTS: "true"
+      # (optionnel) éviter que matplotlib écrive dans $HOME
+      MPLCONFIGDIR: /tmp
     command: >
       bash -lc "
-        set -e
+        set -euo pipefail
         apt-get update &&
         apt-get install -y --no-install-recommends postgresql-client curl &&
         rm -rf /var/lib/apt/lists/* &&
-        pip install --no-cache-dir psycopg2-binary &&
-        echo 'DNS check (postgres):' && getent hosts postgres || true &&
-        echo 'Waiting for Postgres at postgres:5432 ...' &&
-        until psql 'postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable' -c 'SELECT 1' >/dev/null 2>&1; do
+        pip install --no-cache-dir 'mlflow==2.14.0' gunicorn psycopg2-binary &&
+        echo 'Waiting for Postgres...' &&
+        until psql 'postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable' -c 'SELECT 1' >/dev/null 2>&1; do
           echo 'waiting for postgres...'; sleep 2;
         done &&
         echo 'Waiting for MinIO...' &&
         until curl -fsS http://minio:9000/minio/health/ready >/dev/null; do
           echo 'waiting for minio...'; sleep 2;
         done &&
-        exec mlflow server
-          --host 0.0.0.0
-          --port 5000
-          --serve-artifacts
-          --backend-store-uri postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-          --default-artifact-root s3://mlflow-artifacts/
+        # >>> démarre directement gunicorn sur l'app WSGI de MLflow
+        exec gunicorn --bind 0.0.0.0:5000 --workers 4 mlflow.server:app
       "
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:5000/ >/dev/null || exit 1"]
-      interval: 5s
-      timeout: 3s
-      retries: 60
-      start_period: 5s
     ports:
       - "5001:5000"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - |
+          import sys, urllib.request
+          try:
+              with urllib.request.urlopen('http://127.0.0.1:5000/', timeout=3) as r:
+                  sys.exit(0 if 200 <= r.getcode() < 400 else 1)
+          except Exception:
+              sys.exit(1)
     restart: unless-stopped
     networks:
       - data_network
@@ -85,7 +91,15 @@ services:
   monitor:
     image: python:3.11-slim
     working_dir: /app/API
-    command: bash -lc "pip install mlflow requests numpy && python monitor/monitor_ia.py"
+    command: >
+      bash -lc "
+        pip install --no-cache-dir 'mlflow==2.14.0' requests numpy &&
+        echo 'Waiting for MLflow root...' &&
+        until python -c \"import sys,urllib.request;sys.exit(0 if 200<=urllib.request.urlopen(sys.argv[1],timeout=3).status<400 else 1)\" http://mlflow:5000/; do
+          echo 'waiting root...'; sleep 2;
+        done &&
+        python monitor/monitor_ia.py
+      "
     volumes:
       - ./API/monitor:/app/API/monitor:ro
     environment:
@@ -98,13 +112,17 @@ services:
       RATING_AVG_N: "10"
       RATING_MIN_THRESHOLD: "1.0"
       CHECK_INTERVAL_SEC: "5"
-      ALERT_COOLDOWN_SEC: "10"
+      ALERT_COOLDOWN_SEC: "600"
+      NO_PROXY: "mlflow,localhost,127.0.0.1"
+      HTTP_PROXY: ""
+      HTTPS_PROXY: ""
     depends_on:
       mlflow:
-        condition: service_healthy
+        condition: service_started
+    restart: unless-stopped
     networks:
       - data_network
-
+      
 networks:
   data_network:
     external: true

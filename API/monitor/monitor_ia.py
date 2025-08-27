@@ -69,25 +69,28 @@ def get_or_create_experiment_id(client: MlflowClient, name: str) -> str:
         return client.create_experiment(name)
     return exp.experiment_id
 
-def fetch_last_n_metric(client: MlflowClient, exp_id: str, stage_tag: str, metric_name: str, n: int):
-    """Retourne la liste des valeurs de métrique (dernières d’abord) pour les runs taggés stage=..."""
+def fetch_last_n_metric(client: MlflowClient, exp_id: str, stage_tag: str | None, metric_name: str, n: int):
+    # On récupère "un peu plus" de runs récents et on filtre en Python
     runs = client.search_runs(
         [exp_id],
-        filter_string=f'tags.stage = "{stage_tag}" and metrics.{metric_name} IS NOT NULL',
-        order_by=["attribute.start_time DESC"],
-        max_results=n
+        order_by=["attributes.start_time DESC"],
+        max_results=max(n * 3, 50),
     )
     vals = []
     for r in runs:
-        # r.data.metrics est un dict {metric: dernier_val}
-        if metric_name in r.data.metrics:
-            vals.append(r.data.metrics[metric_name])
+        if stage_tag and r.data.tags.get("stage") != stage_tag:
+            continue
+        m = r.data.metrics.get(metric_name)
+        if m is not None:
+            vals.append(m)
+            if len(vals) >= n:
+                break
     return vals
 
-def log_monitor_metrics_to_mlflow(lat_ma10: float | None, rating_ma10: float | None):
+def log_monitor_metrics_to_mlflow(exp_id: str, lat_ma10: float | None, rating_ma10: float | None):
     """Optionnel : loguer les moyennes glissantes dans un run 'monitor' pour les grapher dans MLflow."""
     tags = {"stage": "monitor", "endpoint": "/monitor"}
-    with mlflow.start_run(run_name="monitor-tick", nested=True, tags=tags):
+    with mlflow.start_run(run_name="monitor-tick", experiment_id=exp_id):
         if lat_ma10 is not None:
             mlflow.log_metric("latency_ma10_ms", float(lat_ma10))
         if rating_ma10 is not None:
@@ -99,15 +102,15 @@ def main_loop():
 
     while True:
         try:
-            lat_vals = fetch_last_n_metric(client, exp_id, stage_tag="inference",
-                                           metric_name="latency_ms", n=LAT_AVG_N)
+            lat_vals = fetch_last_n_metric(client, exp_id, stage_tag="inference", metric_name="latency_ms", n=LAT_AVG_N)
+
             lat_ma = float(np.mean(lat_vals)) if lat_vals else None
 
-            rating_vals = fetch_last_n_metric(client, exp_id, stage_tag="feedback",
-                                              metric_name="user_rating", n=RATING_AVG_N)
+            rating_vals = fetch_last_n_metric(client, exp_id, stage_tag="feedback", metric_name="user_rating", n=RATING_AVG_N)
+            
             rating_ma = float(np.mean(rating_vals)) if rating_vals else None
 
-            log_monitor_metrics_to_mlflow(lat_ma, rating_ma)
+            log_monitor_metrics_to_mlflow(exp_id, lat_ma, rating_ma)
 
             now = time.time()
             if lat_ma is not None and lat_ma > LAT_THRESHOLD_MS:

@@ -218,7 +218,7 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
     latency_ms = int((time.perf_counter() - t0) * 1000)
     model_version = os.getenv("MODEL_VERSION") or getattr(app.state, "MODEL_VERSION", None) or "dev"
 
-    pred_row = models.Prediction(form_id=form_id,k=k,model_version=model_version,latency_ms="100000",status="ok")
+    pred_row = models.Prediction(form_id=form_id,k=k,model_version=model_version,latency_ms=latency_ms,status="ok")
     if hasattr(models.Prediction, "user_id"):
         setattr(pred_row, "user_id", user_id)
 

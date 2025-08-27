@@ -37,6 +37,8 @@ API_STATIC_KEY = os.getenv("API_STATIC_KEY", "coall")  # pour échanger contre u
 JWT_SECRET = os.getenv("JWT_SECRET", "coall")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
+_MLFLOW_READY = False
+_MLFLOW_EXP_ID = None 
 
 def create_access_token(subject: str, expires_delta: Optional[timedelta] = None):
     expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES))
@@ -188,18 +190,25 @@ def _log_table_df(df: pd.DataFrame, path: str):
     mlflow.log_text(buf.getvalue(), path)
 
 def _ensure_mlflow():
-    global _MLFLOW_READY
-    if _MLFLOW_READY:
+    global _MLFLOW_READY, _MLFLOW_EXP_ID
+    if _MLFLOW_READY and _MLFLOW_EXP_ID:
         return True
-    uri = os.getenv("MLFLOW_TRACKING_URI")
-    exp = os.getenv("MLFLOW_EXPERIMENT", "restaurant-api")
-    if not uri:
-        return False
+
+    uri = os.getenv("MLFLOW_TRACKING_URI") or "http://mlflow:5000"
+    exp_name = os.getenv("MLFLOW_EXPERIMENT", "restaurant-api")
     try:
         mlflow.set_tracking_uri(uri)
         client = MlflowClient(tracking_uri=uri)
-        if client.get_experiment_by_name(exp) is None:
-            client.create_experiment(exp)
+        exp = client.get_experiment_by_name(exp_name)
+        if exp is None:
+            exp_id = client.create_experiment(exp_name)
+        else:
+            exp_id = exp.experiment_id
+
+        # Très important : fixe l'expérience par défaut du process
+        mlflow.set_experiment(exp_name)
+
+        _MLFLOW_EXP_ID = exp_id
         _MLFLOW_READY = True
         return True
     except Exception:
@@ -227,13 +236,18 @@ def log_prediction_event(prediction, form_dict, scores, used_ml: bool, latency_m
     }
     if not _ensure_mlflow():
         return
-    with mlflow.start_run(run_name=f"predict:{tags['prediction_id']}", nested=True, tags=tags) as run:
+    with mlflow.start_run(
+        run_name=f"predict:{tags['prediction_id']}",
+        experiment_id=_MLFLOW_EXP_ID,          # <-- ici
+        nested=True,
+        tags=tags
+    ) as run:
         mlflow.log_params(params)
         mlflow.log_metrics(metrics)
         mlflow.log_dict(form_dict, "inputs/form.json")
-        topk_df = pd.DataFrame([{"rank": it.rank, "etab_id": it.etab_id, "score": it.score}for it in prediction.items])
+        topk_df = pd.DataFrame([{"rank": it.rank, "etab_id": it.etab_id, "score": it.score}
+                                for it in prediction.items])
         _log_table_df(topk_df, "outputs/topk.csv")
-
         return run.info.run_id
 
 def log_feedback_rating(prediction_id,rating,k= None,model_version= None,user_id= None,
@@ -262,7 +276,7 @@ def log_feedback_rating(prediction_id,rating,k= None,model_version= None,user_id
     }
     if not _ensure_mlflow():
         return
-    # On ne stocke pas le commentaire en clair en tag (limites + privacy) :
+
     if comment:
         tags["feedback_comment_len"] = str(len(comment))
 
@@ -273,7 +287,11 @@ def log_feedback_rating(prediction_id,rating,k= None,model_version= None,user_id
         mlflow.log_metrics(metrics)
         return
 
-    with mlflow.start_run(run_name=f"feedback:{prediction_id}", nested=True):
+    with mlflow.start_run(
+        run_name=f"feedback:{prediction_id}",
+        experiment_id=_MLFLOW_EXP_ID,         # <-- ici
+        nested=True
+    ):
         mlflow.set_tags({k: v for k, v in tags.items() if v is not None})
         mlflow.log_params({k: v for k, v in params.items() if v is not None})
         mlflow.log_metrics(metrics)
