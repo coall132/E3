@@ -560,6 +560,3 @@ def train_pointwise_from_csv(forms_csv: str,out_path: str | None = None,clf_name
     joblib.dump(pipe, out_path)
     print(f"[train] modèle sauvegardé -> {out_path}")
     return out_path, cols
-
-if __name__ == "__main__":
-    train_pointwise_from_csv("forms_restaurants_dept37_single_cp.csv")

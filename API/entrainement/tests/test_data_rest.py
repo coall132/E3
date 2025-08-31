@@ -48,7 +48,6 @@ def _fake_catalog():
 
 def test_data(monkeypatch):
     monkeypatch.setattr(e3.Extract, "main", lambda: _fake_catalog())
-
     df = e3.load_and_prepare_catalog()
     assert isinstance(df, pd.DataFrame)
     assert not df.empty
