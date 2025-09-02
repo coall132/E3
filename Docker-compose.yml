@@ -18,7 +18,20 @@ services:
     networks:
       - data_network
 
-  # Crée le bucket s’il n’existe pas
+  client:
+    build:
+      context: ./client
+      dockerfile: streamlit.Dockerfile
+    environment:
+      - API_BASE_URL=http://api:8000
+    depends_on:
+      api:
+        condition: service_started
+    ports:
+      - "8501:8501"
+    networks:
+      - data_network
+
   minio-init:
     image: minio/mc
     depends_on: []
@@ -42,7 +55,7 @@ services:
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
       # --- artifacts (MinIO/S3)
-      MLFLOW_S3_ENDPOINT_URL: http://minio:9000
+      MLFLOW_S3_ENDPOINT_URL: http://minio:9001
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       # --- mlflow server config via ENV (utilisées par mlflow.server:app)
@@ -63,7 +76,7 @@ services:
           echo 'waiting for postgres...'; sleep 2;
         done &&
         echo 'Waiting for MinIO...' &&
-        until curl -fsS http://minio:9000/minio/health/ready >/dev/null; do
+        until curl -fsS http://minio:9001/minio/health/ready >/dev/null; do
           echo 'waiting for minio...'; sleep 2;
         done &&
         # >>> démarre directement gunicorn sur l'app WSGI de MLflow

@@ -13,11 +13,12 @@ from typing import List, Dict, Optional
 import argparse
 import sys
 
+
 from sentence_transformers import SentenceTransformer
 from sklearn.base import BaseEstimator, TransformerMixin
 from sklearn.compose import ColumnTransformer
 from sklearn.pipeline import Pipeline, make_pipeline
-from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.preprocessing import OneHotEncoder, StandardScaler, FunctionTransformer
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
@@ -31,6 +32,12 @@ import Extract
 # =========================================================
 #            UTILITAIRES GÉNÉRAUX (FORM / FEATURES)
 # =========================================================
+def _artifacts_dir() -> Path:
+    """Crée (si besoin) et retourne le dossier de sortie."""
+    d = Path(os.getenv("ARTIFACTS_DIR", "API/artifacts"))
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
 def fget(form, key, default=None):
     if isinstance(form, dict):
         return form.get(key, default)
@@ -76,6 +83,21 @@ def _first_code_postal(pcs):
 # =========================================================
 #        PRÉPARATION DES DONNÉES (EX-2e FICHIER)
 # =========================================================
+def _jsonify_best(d: dict, drop_keys=("model",)) -> dict:
+    """Renvoie un dict JSON-safe (sans objets sklearn, sans types NumPy)."""
+    out = {}
+    for k, v in d.items():
+        if k in drop_keys:
+            continue
+        # numpy scalars -> python
+        if isinstance(v, (np.generic,)):
+            v = v.item()
+        # numpy arrays -> listes
+        if isinstance(v, np.ndarray):
+            v = v.tolist()
+        out[k] = v
+    return out
+
 def determine_price_level_row(row):
     """
     Si 'start_price' est présent :
@@ -154,10 +176,8 @@ def load_and_prepare_catalog() -> pd.DataFrame:
     }
     etab_features['priceLevel'] = etab_features['priceLevel'].map(price_mapping)
 
-    # Détermine priceLevel à partir de start_price quand dispo
     etab_features['priceLevel'] = etab_features.apply(determine_price_level_row, axis=1)
 
-    # Imputation prob. pour priceLevel manquant
     distribution = etab_features['priceLevel'].value_counts(normalize=True)
     if not distribution.empty and etab_features['priceLevel'].isnull().any():
         niveaux_existants = distribution.index
@@ -166,7 +186,6 @@ def load_and_prepare_catalog() -> pd.DataFrame:
         valeurs = np.random.choice(a=niveaux_existants, size=nb_nan, p=probabilites)
         etab_features.loc[etab_features['priceLevel'].isnull(), 'priceLevel'] = valeurs
 
-    # code_postal depuis l'adresse
     etab_features['code_postal'] = etab_features['adresse'].str.extract(r'(\b\d{5}\b)', expand=False)
     if etab_features['code_postal'].isnull().any():
         mode_cp = etab_features['code_postal'].mode()
@@ -192,12 +211,19 @@ def load_and_prepare_catalog() -> pd.DataFrame:
     # --- horaires -> profils 'ouvert_*' ---
     horaire_features = compute_opening_profile(df_etab[['id_etab']].copy(), df_horaire)
 
+    for d in (etab_features, options_features, df_embed, horaire_features):
+        if 'id_etab' in d.columns:
+            d['id_etab'] = pd.to_numeric(d['id_etab'], errors='coerce')
+
     # Merge
     df_final = etab_features.merge(options_features, on="id_etab", how="left")
     df_final = df_final.merge(horaire_features, on="id_etab", how="left")
 
     # --- merge embeddings ---
     df_final = df_final.merge(df_embed, on="id_etab", how="left")
+
+    for c in [c for c in bool_cols if c in df_final.columns]:
+        df_final[c] = df_final[c].fillna(False).astype(bool)
 
     # Normalise les embeddings en np.ndarray (desc_embed: vecteur, rev_embeds: liste de vecteurs)
     def _as_np_vec(x):
@@ -232,6 +258,9 @@ def load_and_prepare_catalog() -> pd.DataFrame:
     if 'rev_embeds' in df_final.columns:
         df_final['rev_embeds'] = df_final['rev_embeds'].apply(_as_list_of_vecs)
     df_final = sanitize_df_columns(df_final)
+    if 'id_etab' in df_final.columns:
+        df_final['id_etab'] = pd.to_numeric(df_final['id_etab'], errors='coerce')
+        df_final = df_final.sort_values('id_etab').reset_index(drop=True)
     return df_final
 
 # =========================================================
@@ -267,21 +296,38 @@ def score_text(df, form, model, w_rev=0.6, w_desc=0.4, k=3, missing_cos=0.0):
     N = len(df); out = np.empty(N, dtype=float)
 
     desc_list = df.get("desc_embed")
-    cos_desc = np.array([float(v @ z) if isinstance(v, np.ndarray) and v.ndim == 1 and v.size > 0 else None
-                         for v in (desc_list if desc_list is not None else [None]*N)], dtype=object)
+    cos_desc = np.array([
+        float(v @ z) if isinstance(v, np.ndarray) and v.ndim == 1 and v.size > 0 else None
+        for v in (desc_list if desc_list is not None else [None]*N)
+    ], dtype=object)
+
+    # marge du top desc
+    if any(c is not None for c in cos_desc):
+        cosd = np.array([(-1.0 if c is None else float(c)) for c in cos_desc], dtype=float)
+        top = int(np.argmax(cosd))
+        margin = float(cosd[top] - np.partition(cosd, -2)[-2]) if len(cosd) >= 2 else 1.0
+    else:
+        margin = 0.0
 
     rev_list = df.get("rev_embeds", [None]*N)
+
     for i in range(N):
         cos_r = topk_mean_cosine(rev_list[i], z, k=k) if rev_list is not None else None
         cos_d = cos_desc[i]
-        if (cos_d is not None) and (cos_r is not None):
-            c = w_rev*cos_r + w_desc*cos_d
-        elif cos_r is not None:
-            c = cos_r
-        elif cos_d is not None:
+
+        # si le desc a un gagnant net, on force le desc (w_rev=0)
+        if margin >= 0.10 and cos_d is not None:
             c = cos_d
         else:
-            c = float(missing_cos)
+            if (cos_d is not None) and (cos_r is not None):
+                c = w_rev*cos_r + (1.0 - w_rev)*cos_d
+            elif cos_r is not None:
+                c = cos_r
+            elif cos_d is not None:
+                c = cos_d
+            else:
+                c = float(missing_cos)
+
         out[i] = (c + 1.0) / 2.0
     return out
 
@@ -368,8 +414,9 @@ def aggregate_gains(H: Dict[str, np.ndarray], weights: Dict[str, float]) -> np.n
         gains += w * np.asarray(H[k], dtype=float)
     return gains / W.sum()
 
-def pair_features(Zf, H, X_items):
-    diff = np.abs(X_items - Zf.reshape(1, -1))
+
+def pair_features(Zf, H, X_items, diff_scale=0.05):
+    diff = np.abs(X_items - Zf.reshape(1, -1)) * float(diff_scale)
     cos  = np.asarray(H['text'], float)[:, None]
     return np.hstack([diff, cos]).astype(np.float32)
 
@@ -377,7 +424,7 @@ def pair_features(Zf, H, X_items):
 #           PRÉPROC ITEM (colonnes classiques)
 # =========================================================
 
-def build_preproc_for_items(df: pd.DataFrame) -> ColumnTransformer:
+def build_preproc_for_items(df: pd.DataFrame):
     BOOL_COLS = [
         'allowsDogs','delivery','goodForChildren','goodForGroups','goodForWatchingSports',
         'outdoorSeating','reservable','restroom','servesVegetarianFood','servesBrunch',
@@ -386,10 +433,14 @@ def build_preproc_for_items(df: pd.DataFrame) -> ColumnTransformer:
     NUM_COLS = ['rating','start_price']
     lev = 'priceLevel'
 
+    bool_cols_present = [c for c in BOOL_COLS if c in df.columns]
+    bool_categories = [np.array([0, 1], dtype=int) for _ in bool_cols_present]
+
     num_pipe  = Pipeline([('impute', SimpleImputer(strategy='constant', fill_value=0)),
                           ('scale', StandardScaler())])
-    bool_pipe = Pipeline([('impute', SimpleImputer(strategy='most_frequent')),
-                          ('onehot', OneHotEncoder(drop='if_binary', handle_unknown='ignore', sparse_output=True))])
+    bool_pipe = Pipeline([
+        ('toint', FunctionTransformer(lambda X: X.astype(int))),
+        ('onehot', OneHotEncoder(categories=bool_categories,drop='if_binary',handle_unknown='ignore',sparse_output=True))])
     lev_pipe  = Pipeline([('impute', SimpleImputer(strategy='constant', fill_value=0)),
                           ('scale', StandardScaler())])
 
@@ -419,6 +470,11 @@ def form_to_row(form, df_catalog):
         row['priceLevel'] = np.nan if lvl is None else float(lvl)
     if 'code_postal' in df_catalog.columns:
         row['code_postal'] = _first_code_postal(fget(form, 'code_postal', None))
+    
+    bool_cols = [c for c in df_catalog.columns if df_catalog[c].dtype == bool]
+    for c in bool_cols:
+        row[c] = False
+
     opts = fget(form, 'options', [])
     if isinstance(opts, str) and opts.strip():
         opts = [x.strip() for x in re.split(r'[;,]', opts)]
@@ -426,6 +482,7 @@ def form_to_row(form, df_catalog):
         for c in opts:
             if c in df_catalog.columns:
                 row[c] = True
+    
     for c in ['rating','start_price']:
         if c in df_catalog.columns:
             row[c] = 0.0
@@ -1045,16 +1102,24 @@ def main_param():
     summary.to_csv("artifacts/benchmark_summary_param.csv", index=True)
     per_query.to_csv("artifacts/benchmark_per_query_param.csv", index=False)
 
+    Path("API/artifacts").mkdir(exist_ok=True, parents=True)
+
+    to_dump = {
+        "tau_best": float(tau_best),
+        "text": {"w_rev": float(text_w_rev_best), "k": int(text_k_best)},
+        "LinearSVC": {
+            "C": float(best_svc["C"]),
+            "loss": str(best_svc["loss"]),
+            "class_weight": (None if best_svc["class_weight"] is None else str(best_svc["class_weight"]))
+        },
+        "RF": _jsonify_best(best_rf),
+        "HistGB": _jsonify_best(best_hgb),
+        "PairSVM": _jsonify_best(best_pair_svm),
+        "PairLogReg": _jsonify_best(best_pair_lr),
+    }
+
     with open("artifacts/best_params.json", "w", encoding="utf-8") as f:
-        json.dump({
-            "tau_best": tau_best,
-            "text": {"w_rev": text_w_rev_best, "k": text_k_best},
-            "LinearSVC": {"C": best_svc["C"], "loss": best_svc["loss"], "class_weight": best_svc["class_weight"]},
-            "RF": best_rf | {},   # contient n_estimators, max_depth, etc.
-            "HistGB": best_hgb | {},
-            "PairSVM": {"C": best_pair_svm["C"], "loss": best_pair_svm["loss"]},
-            "PairLogReg": {"C": best_pair_lr["C"], "class_weight": best_pair_lr["class_weight"]}
-        }, f, ensure_ascii=False, indent=2)
+        json.dump(to_dump, f, ensure_ascii=False, indent=2)
 
     print("\nFichiers générés dans ./artifacts :")
     print("- benchmark_summary_param.csv")
@@ -1123,7 +1188,7 @@ def main_entrainement():
                 out.append(f)
             return out
         forms = forms_from_csv(forms_csv, df)
-
+    print("debut IA")
     # 4) Matrice d'items (pour pair_features)
     X_items = preproc.fit_transform(df)
     X_items = X_items.toarray().astype(np.float32) if hasattr(X_items, "toarray") else np.asarray(X_items, dtype=np.float32)
@@ -1150,7 +1215,8 @@ def main_entrainement():
 
     mdl_lr  = LogisticRegression(max_iter=2000)
     mdl_rf  = RandomForestClassifier(n_estimators=400, random_state=42, n_jobs=-1)
-    mdl_hgb = HistGradientBoostingClassifier(random_state=42)
+    mdl_hgb = HistGradientBoostingClassifier(random_state=42,learning_rate= 0.1,max_leaf_nodes= 31
+                                             ,min_samples_leaf=20,l2_regularization=0.001,max_bins=255)
     mdl_svm = LinearSVC(random_state=42)
 
     mdl_lr.fit(Xtr, ytr, sample_weight=swtr)
@@ -1161,6 +1227,7 @@ def main_entrainement():
     # 7) Évaluation ranking
     models = {
     "LinearSVC": mdl_svm,
+    "HistGrad":mdl_hgb
 }
 
     summary, per_query = eval_benchmark(forms_te, preproc, df, X_items, SENT_MODEL, models,
@@ -1168,13 +1235,19 @@ def main_entrainement():
     print("\n=== Résumé (moyennes + IC95) ===")
     print(summary)
 
-    # 8) Sorties
-    summary.to_csv("artifacts/benchmark_summary.csv", index=True)
-    per_query.to_csv("artifacts/benchmark_per_query.csv", index=False)
+    outdir = _artifacts_dir() 
+    summary.to_csv(outdir / "benchmark_summary.csv", index=True)
+    per_query.to_csv(outdir / "benchmark_per_query.csv", index=False)
 
+    outdir = _artifacts_dir()
+    outdir.mkdir(parents=True, exist_ok=True)
 
-    # 9) Sauvegarde d’un modèle (exploité par l’API)
-    joblib.dump(mdl_svm, "artifacts/linear_svc_pointwise.joblib", compress=("xz", 3))
+    rank_model = mdl_hgb   
+
+    joblib.dump(preproc, outdir / "preproc_items.joblib", compress=("xz", 3))
+
+    joblib.dump(rank_model, outdir / "rank_model.joblib", compress=("xz", 3))
+    print("\nFichiers générés dans", outdir.resolve())
     print("\nFichiers générés")
 
 def _dispatch(mode: str):

@@ -8,12 +8,14 @@ import os
 from fastapi import FastAPI, Depends, HTTPException, Security, status, Query
 from argon2 import PasswordHasher, exceptions as argon_exc
 from pathlib import Path
+from sentence_transformers import SentenceTransformer
 import joblib
 import numpy as np
 import pandas as pd
 import os, mlflow
 from mlflow.tracking import MlflowClient
 import io
+import math
 
 try:
     from . import models
@@ -22,11 +24,12 @@ try:
     from . import benchmark_2_0 as bm
     from . import utils
     from .main import app
+    from . import features as fx
 except:
     from API import models
     from API import database as db
     from API import schema
-    from API import benchmark_2_0 as bm
+    from API import features as fx
     from API import utils
 
 api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)  # pour /auth/token uniquement
@@ -36,7 +39,7 @@ ph = PasswordHasher(time_cost=2, memory_cost=102400, parallelism=8)
 API_STATIC_KEY = os.getenv("API_STATIC_KEY", "coall")  # pour échanger contre un token
 JWT_SECRET = os.getenv("JWT_SECRET", "coall")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "15"))
+ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 _MLFLOW_READY = False
 _MLFLOW_EXP_ID = None 
 
@@ -103,23 +106,28 @@ def current_user_id(subject: str = Depends(get_current_subject)) -> int:
     
 def load_ML():
     state = schema.MLState()
-    state.preproc_factory = bm.make_preproc_final
-    state.sent_model = getattr(bm, "model", None)
+    state.preproc_factory = None
+    try:
+        state.sent_model = SentenceTransformer("BAAI/bge-m3")
+    except Exception:
+        state.sent_model = None
 
-    if not (state.preproc or state.preproc_factory):
-            raise RuntimeError("Aucun préprocesseur trouvé dans benchmark_3 (preproc ou build_preproc).")
-    
-    path = os.getenv("RANK_MODEL_PATH", None)
-    state.rank_model_path = path
-    skip_rank = os.getenv("SKIP_RANK_MODEL", "0") == "1"
-    if not skip_rank and Path(path).exists():
-        try:
-            state.rank_model = joblib.load(path)
-            print(f"[ml] Rank model chargé: {path}")
-        except Exception as e:
-            raise RuntimeError(f"Impossible de charger le modèle: {path} ({e})") from e
+    base = os.getenv("ARTIFACTS_DIR", "artifacts")
+    preproc_path = Path(os.getenv("PREPROC_PATH", f"{base}/preproc_items.joblib"))
+    rank_path    = Path(os.getenv("RANK_MODEL_PATH", f"{base}/rank_model.joblib"))
+
+    if preproc_path.exists():
+        state.preproc = joblib.load(preproc_path)
+        print(f"[ml] Preproc chargé: {preproc_path}")
     else:
-        print(f"[ml] Rank model ignoré (fichier absent ou SKIP_RANK_MODEL=1): {path}")
+        print(f"[ml] Preproc introuvable: {preproc_path}")
+
+    if rank_path.exists():
+        state.rank_model = joblib.load(rank_path)
+        state.rank_model_path = str(rank_path)
+        print(f"[ml] Rank model chargé: {rank_path}")
+    else:
+        print(f"[ml] Rank model introuvable: {rank_path}")
     return state
 
 def load_df():
@@ -128,61 +136,74 @@ def load_df():
     df_embed = db.extract_table(db.engine,"etab_embedding")
     df_horaire = db.extract_table(db.engine,"opening_period")
 
-    etab_features = df_etab[['id_etab', 'rating', 'priceLevel', 'latitude', 'longitude','adresse',"editorialSummary_text","start_price"]].copy()
+    etab_features = df_etab[['id_etab', 'rating', 'priceLevel', 'latitude', 'longitude', 'adresse',
+                             'editorialSummary_text', 'start_price']].copy()
+
     price_mapping = {
         'PRICE_LEVEL_INEXPENSIVE': 1, 'PRICE_LEVEL_MODERATE': 2,
         'PRICE_LEVEL_EXPENSIVE': 3, 'PRICE_LEVEL_VERY_EXPENSIVE': 4
     }
     etab_features['priceLevel'] = etab_features['priceLevel'].map(price_mapping)
-    etab_features['priceLevel'] = etab_features.apply(utils.determine_price_level,axis=1)
+
+    etab_features['priceLevel'] = etab_features.apply(fx.determine_price_level_row, axis=1)
 
     distribution = etab_features['priceLevel'].value_counts(normalize=True)
-    niveaux_existants = distribution.index
-    probabilites = distribution.values
-    nb_nan_a_remplacer = etab_features['priceLevel'].isnull().sum()
-    valeurs_aleatoires = np.random.choice(a=niveaux_existants,size=nb_nan_a_remplacer,p=probabilites)
-    etab_features.loc[etab_features['priceLevel'].isnull(), 'priceLevel'] = valeurs_aleatoires
+    if not distribution.empty and etab_features['priceLevel'].isnull().any():
+        niveaux_existants = distribution.index
+        probabilites = distribution.values
+        nb_nan = etab_features['priceLevel'].isnull().sum()
+        valeurs = np.random.choice(a=niveaux_existants, size=nb_nan, p=probabilites)
+        etab_features.loc[etab_features['priceLevel'].isnull(), 'priceLevel'] = valeurs
 
     etab_features['code_postal'] = etab_features['adresse'].str.extract(r'(\b\d{5}\b)', expand=False)
-    etab_features['code_postal'].fillna(etab_features['code_postal'].mode()[0], inplace=True)
-    etab_features.drop("adresse",axis=1,inplace=True)
+    if etab_features['code_postal'].isnull().any():
+        mode_cp = etab_features['code_postal'].mode()
+        if not mode_cp.empty:
+            etab_features['code_postal'].fillna(mode_cp.iloc[0], inplace=True)
+
+    etab_features.drop(columns=['adresse'], inplace=True)
     etab_features['rating'].fillna(etab_features['rating'].mean(), inplace=True)
     etab_features['start_price'].fillna(0, inplace=True)
 
-    options_features = df_options.copy()
+    # --- options_features (bool) ---
+    bool_cols = [
+        'allowsDogs','delivery','goodForChildren','goodForGroups','goodForWatchingSports',
+        'outdoorSeating','reservable','restroom','servesVegetarianFood','servesBrunch',
+        'servesBreakfast','servesDinner','servesLunch'
+    ]
+    options_features = df_options[['id_etab'] + [c for c in bool_cols if c in df_options.columns]].copy()
+    for c in [col for col in bool_cols if col in options_features.columns]:
+        options_features[c].fillna(False, inplace=True)
+    if 'restroom' in options_features.columns:
+        options_features['restroom'].fillna(True, inplace=True)
 
-    options_features['allowsDogs'].fillna(False, inplace=True)
-    options_features['delivery'].fillna(False, inplace=True)
-    options_features['goodForChildren'].fillna(False, inplace=True)
-    options_features['goodForGroups'].fillna(False, inplace=True)
-    options_features['goodForWatchingSports'].fillna(False, inplace=True)
-    options_features['outdoorSeating'].fillna(False, inplace=True)
-    options_features['reservable'].fillna(False, inplace=True)
-    options_features['restroom'].fillna(True, inplace=True)
-    options_features['servesVegetarianFood'].fillna(False, inplace=True)
-    options_features['servesBrunch'].fillna(False, inplace=True)
-    options_features['servesBreakfast'].fillna(False, inplace=True)
-    options_features['servesDinner'].fillna(False, inplace=True)
-    options_features['servesLunch'].fillna(False, inplace=True)
-    horaire_features=df_horaire.copy()
+    # --- horaires -> profils 'ouvert_*' ---
+    horaire_features = fx.compute_opening_profile(df_etab[['id_etab']].copy(), df_horaire)
 
-    horaire_features.dropna(subset=['close_hour', 'close_day'], inplace=True)
-    for col in ['open_day', 'open_hour', 'close_day', 'close_hour']:
-        horaire_features[col] = horaire_features[col].astype(int)
+    for d in (etab_features, options_features, df_embed, horaire_features):
+        if 'id_etab' in d.columns:
+            d['id_etab'] = pd.to_numeric(d['id_etab'], errors='coerce')
 
-    jours = {0: "dimanche", 1: "lundi", 2: "mardi", 3: "mercredi", 4: "jeudi", 5: "vendredi", 6: "samedi"}
-    creneaux = {"matin": (8, 11), "midi": (11, 14), "apres_midi": (14, 19), "soir": (19, 23)}
+    # Merge
+    df_final = etab_features.merge(options_features, on="id_etab", how="left")
+    df_final = df_final.merge(horaire_features, on="id_etab", how="left")
 
-    horaire_features = df_etab.apply(utils.calculer_profil_ouverture,axis=1,df_horaires=horaire_features,jours=jours,creneaux=creneaux)
+    # --- merge embeddings ---
+    df_final = df_final.merge(df_embed, on="id_etab", how="left")
 
-    df_final=pd.merge(etab_features,options_features,on="id_etab",how='left')
-    df_final=pd.merge(df_final,horaire_features,on="id_etab",how='left')
-    df_final_embed=pd.merge(df_final,df_embed,on="id_etab",how='left')
-    if "desc_embed" in df_final_embed.columns:
-        df_final_embed["desc_embed"] = df_final_embed["desc_embed"].apply(utils.to_np1d)
-    if "rev_embeds" in df_final_embed.columns:
-        df_final_embed["rev_embeds"] = df_final_embed["rev_embeds"].apply(utils.to_list_np)
-    return df_final_embed
+    for c in [c for c in bool_cols if c in df_final.columns]:
+        df_final[c] = df_final[c].fillna(False).astype(bool)
+
+    if "desc_embed" in df_final.columns:
+        df_final["desc_embed"] = df_final["desc_embed"].apply(utils.to_np1d)
+    if "rev_embeds" in df_final.columns:
+        df_final["rev_embeds"] = df_final["rev_embeds"].apply(utils.to_list_np)
+
+    df_final = fx.sanitize_df_columns(df_final)
+    if 'id_etab' in df_final.columns:
+        df_final['id_etab'] = pd.to_numeric(df_final['id_etab'], errors='coerce')
+        df_final = df_final.sort_values('id_etab').reset_index(drop=True)
+    return df_final
 
 def _log_table_df(df: pd.DataFrame, path: str):
     buf = io.StringIO()

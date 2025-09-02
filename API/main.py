@@ -22,30 +22,29 @@ try :
     from . import models
     from . import schema
     from .database import engine, get_db, SessionLocal
-    from .benchmark_2_0 import (
-    score_func,
-    build_item_features_df,
-    aggregate_gains,
-    W_eval,
-    model as DEFAULT_SENT_MODEL,
-    pick_anchors_from_df,
-    build_item_features_df,
-    make_preproc_final,  
-)
+    from .features import(
+        score_func,
+        pair_features,
+        form_to_row,
+        build_item_features_df,
+        aggregate_gains,
+        W_eval,
+        pick_anchors_from_df,)
 except :
     from API import utils
     from API import CRUD
     from API import models
     from API import schema
     from API.database import engine, get_db, SessionLocal
-    import API.benchmark_2_0 as bm
-    score_func = bm.score_func
-    build_item_features_df = bm.build_item_features_df
-    aggregate_gains = bm.aggregate_gains
-    W_eval = bm.W_eval
-    DEFAULT_SENT_MODEL = getattr(bm, "model", None)
-    pick_anchors_from_df = bm.pick_anchors_from_df
-    make_preproc_final = bm.make_preproc_final
+    from . import features as fx
+    score_func = fx.score_func
+    pair_features = fx.pair_features
+    form_to_row = fx.form_to_row
+    build_item_features_df = fx.build_item_features_df
+    aggregate_gains = fx.aggregate_gains
+    W_eval = fx.W_eval
+    pick_anchors_from_df = fx.pick_anchors_from_df
+
 
 app = FastAPI(
     title="API Reco Restaurant",
@@ -72,17 +71,20 @@ models.Base.metadata.create_all(bind=engine)
 
 @app.on_event("startup")
 def warmup():
+    # Mode dev: ne rien charger de lourd
     if os.getenv("DISABLE_WARMUP", "0") == "1":
-        app.state.DF_CATALOG = pd.DataFrame()
-        app.state.SENT_MODEL = utils._StubSentModel()
-        app.state.PREPROC = None
-        app.state.ML_MODEL = None
-        app.state.FEATURE_COLS = []
-        app.state.ANCHORS = None
+        app.state.DF_CATALOG    = pd.DataFrame()
+        app.state.SENT_MODEL    = utils._StubSentModel()  # stub léger
+        app.state.PREPROC       = None
+        app.state.ML_MODEL      = None
+        app.state.X_ITEMS       = None
+        app.state.FEATURE_COLS  = []
+        app.state.ANCHORS       = None
         app.state.MODEL_VERSION = os.getenv("MODEL_VERSION", "dev")
         print("[startup] Warmup désactivé (DISABLE_WARMUP=1).")
         return
-    
+
+    # 1) Catalogue
     try:
         df = CRUD.load_df()
         if df is None or df.empty:
@@ -92,57 +94,64 @@ def warmup():
         print(f"[startup] Échec chargement DF_CATALOG: {e}")
         app.state.DF_CATALOG = pd.DataFrame()
 
+    # 2) Artifacts ML (préproc fitté + rank model + modèle d’embed)
     try:
         ml = CRUD.load_ML()
-        app.state.PREPROC = getattr(ml, "preproc", None)
-        app.state.PREPROC_FACTORY = getattr(ml, "preproc_factory", None)
-        app.state.SENT_MODEL = getattr(ml, "sent_model", None)
-        app.state.ML_MODEL = getattr(ml, "rank_model", None)
-        # utile pour tracer la version
-        app.state.MODEL_VERSION = (
-            os.getenv("MODEL_VERSION")
-            or getattr(ml, "rank_model_path", None)
-            or "dev"
-        )
+        app.state.ML_MODEL      = getattr(ml, "rank_model", None)
+        app.state.PREPROC       = getattr(ml, "preproc", None)
+        app.state.SENT_MODEL    = getattr(ml, "sent_model", None)
+        app.state.MODEL_VERSION = os.getenv("MODEL_VERSION") or getattr(ml, "rank_model_path", None) or "dev"
+
         if app.state.SENT_MODEL is None:
+            # stub dimensionné d’après les embeddings présents dans le DF
             dim = utils._infer_embed_dim(app.state.DF_CATALOG, default=1024)
             app.state.SENT_MODEL = utils._StubSentModel(dim=dim)
-        print(f"[startup] ML: PREPROC={type(app.state.PREPROC).__name__ if app.state.PREPROC else 'None'} | "
+
+        print(f"[startup] ML: PREPROC={'ok' if app.state.PREPROC is not None else 'None'} | "
               f"MODEL={'ok' if app.state.ML_MODEL is not None else 'None'}")
     except Exception as e:
         print(f"[startup] Échec chargement ML: {e}")
-        app.state.PREPROC = None
-        app.state.SENT_MODEL = DEFAULT_SENT_MODEL
-        app.state.ML_MODEL = None
+        app.state.ML_MODEL      = None
+        app.state.PREPROC       = None
+        # fallback texte: stub
+        dim = utils._infer_embed_dim(app.state.DF_CATALOG, default=1024)
+        app.state.SENT_MODEL    = utils._StubSentModel(dim=dim)
         app.state.MODEL_VERSION = os.getenv("MODEL_VERSION", "dev")
 
     df = app.state.DF_CATALOG
-    anchors = pick_anchors_from_df(df, n=8) if not df.empty else None
-    app.state.ANCHORS = anchors
 
-    feature_cols = []
-    if not df.empty:
-        neutral_form = {
-            "description": "",
-            "price_level": np.nan,
-            "code_postal": None,
-            "options": [],
-            "open": "",
-        }
-        X_probe_df, _ = build_item_features_df(df=df,form=neutral_form,sent_model=app.state.SENT_MODEL,
-            include_query_consts=True,anchors=anchors,)
-        feature_cols = [c for c in X_probe_df.columns if c != "id_etab"]
-        app.state.FEATURE_COLS = feature_cols
+    # 3) Ancres pour features texte (optionnel)
+    app.state.ANCHORS = fx.pick_anchors_from_df(df, n=8) if not df.empty else None
 
-        if app.state.PREPROC is None and feature_cols:
-            app.state.PREPROC = make_preproc_final().fit(X_probe_df[feature_cols])
-            print("[startup] PREPROC fallback créé et fit sur features de probe (DEV ONLY).")
-    else:
-        app.state.FEATURE_COLS = []
+    # 4) Pré-calcul X_ITEMS avec le préproc **fitté** (transform, pas fit_transform)
+    app.state.X_ITEMS = None
+    if app.state.PREPROC is not None and not df.empty:
+        try:
+            X_items_sp = app.state.PREPROC.transform(df)
+            app.state.X_ITEMS = (
+                X_items_sp.toarray().astype(np.float32)
+                if hasattr(X_items_sp, "toarray")
+                else np.asarray(X_items_sp, dtype=np.float32)
+            )
+            print(f"[startup] PREPROC ok | X_ITEMS shape={app.state.X_ITEMS.shape}")
+        except Exception as e:
+            print(f"[startup] Échec création X_ITEMS: {e}")
+            app.state.X_ITEMS = None
 
-    anch_shape = None if anchors is None else getattr(anchors, "shape", None)
-    print(f"[startup] OK | rows={len(df)} | features={len(feature_cols)} | anchors={anch_shape} |")
+    app.state.FEATURE_COLS = []
 
+    # 5) Sanity-check: largeur des features vs modèle (pair_features ajoute 1 colonne cos texte)
+    nfi = getattr(app.state.ML_MODEL, "n_features_in_", None)
+    if nfi is not None and app.state.X_ITEMS is not None:
+        expected = int(app.state.X_ITEMS.shape[1]) + 1  # +1 = colonne 'text' de pair_features
+        if nfi != expected:
+            print(f"[startup][warn] Le modèle attend n_features_in_={nfi} mais pair_features produira {expected}. "
+                  f"Vérifie que rank_model.joblib et preproc_items.joblib proviennent du même train/catalogue.")
+
+    anch_shape = None if app.state.ANCHORS is None else getattr(app.state.ANCHORS, "shape", None)
+    print(f"[startup] OK | rows={len(df)} | X_ITEMS={(None if app.state.X_ITEMS is None else app.state.X_ITEMS.shape)} "
+          f"| anchors={anch_shape}")
+    
 @app.get("/")
 def read_root():
     return {"message": "Bienvenue sur l'API des restaurants. Allez sur /docs pour voir les endpoints."}
@@ -201,14 +210,18 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
     used_ml = False
     scores = gains_proxy.copy()
 
-    if use_ml and getattr(app.state, "ML_MODEL", None) is not None and getattr(app.state, "PREPROC", None) is not None:
-        feature_cols = getattr(app.state, "FEATURE_COLS", None) or [c for c in X_df.columns if c != "id_etab"]
-        app.state.FEATURE_COLS = feature_cols
+    
+    if use_ml and getattr(app.state, "ML_MODEL", None) is not None \
+            and getattr(app.state, "PREPROC", None) is not None \
+            and getattr(app.state, "X_ITEMS", None) is not None:
 
-        X_df_aligned = utils._align_df_to_cols(X_df.copy(), feature_cols)
-        X_sp = app.state.PREPROC.transform(X_df_aligned)
-        X = X_sp.toarray().astype(np.float32) if hasattr(X_sp, "toarray") else np.asarray(X_sp, dtype=np.float32)
-        scores = utils._predict_scores(app.state.ML_MODEL, X)
+        Zf_sp = app.state.PREPROC.transform(form_to_row(form.model_dump(), app.state.DF_CATALOG))
+        Zf = Zf_sp.toarray()[0] if hasattr(Zf_sp, "toarray") else np.asarray(Zf_sp)[0]
+
+        H = score_func(app.state.DF_CATALOG, form.model_dump(), app.state.SENT_MODEL)
+        Xq = pair_features(Zf, H, app.state.X_ITEMS) 
+
+        scores = utils._predict_scores(app.state.ML_MODEL, Xq) 
         used_ml = True
 
     k = int(max(1, min(k, 50)))

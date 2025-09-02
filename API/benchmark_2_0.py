@@ -29,7 +29,7 @@ try:
 except:
     import CRUD
 
-"""model = SentenceTransformer('BAAI/bge-m3')"""
+model = SentenceTransformer('BAAI/bge-m3')
 
 W_proxy = {'price':0.18,'rating':0.14,'options':0.14,'text':0.28,'city':0.04,'open':0.04}
 W_eval  = {'price':0.12,'rating':0.18,'options':0.12,'text':0.22,'city':0.20,'open':0.16}
@@ -253,24 +253,44 @@ def topk_mean_cosine(mat_or_list, z, k=3):
     return float(np.mean(sims[idx]))
 
 def score_text(df, form, model, w_rev=0.6, w_desc=0.4, k=3, missing_cos=0.0):
-    q = _text_or_empty(fget(form, 'description', None))
+    q = (fget(form, 'description', '') or '').strip()
     if not q:
         return np.ones(len(df), dtype=float)
     z = model.encode([q], normalize_embeddings=True, show_progress_bar=False)[0].astype(np.float32)
     N = len(df); out = np.empty(N, dtype=float)
 
     desc_list = df.get("desc_embed")
-    cos_desc = np.array([float(v @ z) if isinstance(v, np.ndarray) and v.ndim==1 else None
-                         for v in (desc_list if desc_list is not None else [None]*N)], dtype=object)
+    cos_desc = np.array([
+        float(v @ z) if isinstance(v, np.ndarray) and v.ndim == 1 and v.size > 0 else None
+        for v in (desc_list if desc_list is not None else [None]*N)
+    ], dtype=object)
+
+    # marge du top desc
+    if any(c is not None for c in cos_desc):
+        cosd = np.array([(-1.0 if c is None else float(c)) for c in cos_desc], dtype=float)
+        top = int(np.argmax(cosd))
+        margin = float(cosd[top] - np.partition(cosd, -2)[-2]) if len(cosd) >= 2 else 1.0
+    else:
+        margin = 0.0
 
     rev_list = df.get("rev_embeds", [None]*N)
+
     for i in range(N):
         cos_r = topk_mean_cosine(rev_list[i], z, k=k) if rev_list is not None else None
         cos_d = cos_desc[i]
-        if (cos_d is not None) and (cos_r is not None): c = w_rev*cos_r + w_desc*cos_d
-        elif cos_r is not None:                         c = cos_r
-        elif cos_d is not None:                         c = cos_d
-        else:                                           c = float(missing_cos)
+
+        if margin >= 0.10 and cos_d is not None:
+            c = cos_d
+        else:
+            if (cos_d is not None) and (cos_r is not None):
+                c = w_rev*cos_r + (1.0 - w_rev)*cos_d
+            elif cos_r is not None:
+                c = cos_r
+            elif cos_d is not None:
+                c = cos_d
+            else:
+                c = float(missing_cos)
+
         out[i] = (c + 1.0) / 2.0
     return out
 
@@ -352,12 +372,18 @@ def compute_form_embed(form, sent_model):
     return z.astype(np.float32)
 
 def pick_anchors_from_df(df, n=8):
-    vecs = [v for v in df.get('desc_embed', []) if isinstance(v, np.ndarray) and v.ndim == 1]
+    vecs = [v for v in df.get('desc_embed', []) if isinstance(v, np.ndarray) and v.ndim == 1 and v.size > 0]
     if not vecs:
         return None
-    vecs = np.stack(vecs).astype(np.float32)
-    idx = np.linspace(0, len(vecs)-1, num=min(n, len(vecs)), dtype=int)
-    return vecs[idx]
+    lengths = [v.size for v in vecs]
+    mode_len = max(set(lengths), key=lengths.count)
+    vecs = [v for v in vecs if v.size == mode_len]
+    if not vecs:
+        return None
+
+    M = np.stack(vecs).astype(np.float32)
+    idx = np.linspace(0, len(vecs) - 1, num=min(n, len(vecs)), dtype=int)
+    return M[idx]
 
 def anchor_cos_features(zf, anchors):
     if zf is None or anchors is None:
@@ -519,44 +545,110 @@ def build_pointwise_dataset(forms, df, sent_model,
     qid = np.concatenate(qid_all).astype(int)
     return X, y, sw, qid, cols_ref
 
+def determine_price_level_row(row):
+    """
+    Si 'start_price' est présent :
+       < 15€ -> 1 ; 15-20€ -> 2 ; > 20€ -> 3
+    Sinon : on garde la valeur (mapping) de priceLevel.
+    """
+    sp = row.get('start_price', np.nan)
+    if pd.notna(sp):
+        try:
+            price = float(sp)
+        except Exception:
+            return np.nan
+        if price < 15:
+            return 1
+        elif price <= 20:
+            return 2
+        else:
+            return 3
+    return row.get('priceLevel', np.nan)
 
-def make_preproc_final():
-    return Pipeline(steps=[
-        ("impute", SimpleImputer(strategy="constant", fill_value=0.0)),
-        ("scale",  StandardScaler()) 
-    ])
+def sanitize_df_columns(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
+    df.columns = [str(c) for c in df.columns]
+    df.rename(columns=lambda c: re.sub(r'^"+|"+$', '', c), inplace=True)
+    return df
+
+def compute_opening_profile(df_etab: pd.DataFrame, df_horaires: pd.DataFrame) -> pd.DataFrame:
+    jours = {0: "dimanche", 1: "lundi", 2: "mardi", 3: "mercredi", 4: "jeudi", 5: "vendredi", 6: "samedi"}
+    creneaux = {"matin": (8, 11), "midi": (11, 14), "apres_midi": (14, 19), "soir": (19, 23)}
+
+    hf = df_horaires.copy()
+    # drop lignes incomplètes
+    hf.dropna(subset=['close_hour', 'close_day'], inplace=True)
+    for col in ['open_day', 'open_hour', 'close_day', 'close_hour']:
+        hf[col] = hf[col].astype(int)
+
+    def calculer_profil_ouverture(etab_row):
+        etab_id = etab_row['id_etab']
+        profil = {'id_etab': etab_id}
+        for j in jours.values():
+            for c in creneaux.keys():
+                profil[f"ouvert_{j}_{c}"] = 0
+
+        horaires_etab = hf[hf['id_etab'] == etab_id]
+        if horaires_etab.empty:
+            return pd.Series(profil)
+
+        for _, periode in horaires_etab.iterrows():
+            if periode['open_day'] != periode['close_day']:
+                continue
+            jour_nom = jours.get(periode['open_day'])
+            if not jour_nom:
+                continue
+            for nom_creneau, (debut, fin) in creneaux.items():
+                if periode['open_hour'] < fin and periode['close_hour'] > debut:
+                    profil[f"ouvert_{jour_nom}_{nom_creneau}"] = 1
+        return pd.Series(profil)
+
+    return df_etab.apply(calculer_profil_ouverture, axis=1)
+
+def pair_features(Zf, H, X_items, diff_scale=0.05):
+    diff = np.abs(X_items - Zf.reshape(1, -1)) * float(diff_scale)
+    cos  = np.asarray(H['text'], float)[:, None]
+    return np.hstack([diff, cos]).astype(np.float32)
+
+def _toint_safe(X):
+    import numpy as np
+    import pandas as pd
+    # Case DataFrame -> on remplit les NaN puis cast
+    if hasattr(X, "fillna"):
+        return X.fillna(0).astype(np.int32)
+    # Case ndarray -> on remplace les NaN puis cast
+    return np.nan_to_num(X, nan=0.0).astype(np.int32)
+
+def build_preproc_for_items(df: pd.DataFrame):
+    BOOL_COLS = [
+        'allowsDogs','delivery','goodForChildren','goodForGroups','goodForWatchingSports',
+        'outdoorSeating','reservable','restroom','servesVegetarianFood','servesBrunch',
+        'servesBreakfast','servesDinner','servesLunch'
+    ]
+    NUM_COLS = ['rating','start_price']
+    lev = 'priceLevel'
+
+    bool_cols_present = [c for c in BOOL_COLS if c in df.columns]
+    bool_categories = [np.array([0, 1], dtype=int) for _ in bool_cols_present]
+
+    num_pipe  = Pipeline([('impute', SimpleImputer(strategy='constant', fill_value=0)),
+                          ('scale', StandardScaler())])
+    bool_pipe = Pipeline([
+        ('toint', FunctionTransformer(lambda X: X.astype(int))),
+        ('onehot', OneHotEncoder(categories=bool_categories,drop='if_binary',handle_unknown='ignore',sparse_output=True))])
+    lev_pipe  = Pipeline([('impute', SimpleImputer(strategy='constant', fill_value=0)),
+                          ('scale', StandardScaler())])
+
+    # ⬇️ plus de transformer "text"
+    return ColumnTransformer(
+        transformers=[
+            ("num",  num_pipe,  [c for c in NUM_COLS if c in df.columns]),
+            ("bool", bool_pipe, [c for c in BOOL_COLS if c in df.columns]),
+            ("lev",  lev_pipe,  [lev] if lev in df.columns else []),
+        ],
+        remainder="drop",
+    )
 
 def load_forms_csv(path_csv: str):
     return pd.read_csv(path_csv)
 
-def train_pointwise_from_csv(forms_csv: str,out_path: str | None = None,clf_name: str = "LinearSVC"):
-    df_items = CRUD.load_df()           
-    forms_df = load_forms_csv(forms_csv)    
-
-    anchors = pick_anchors_from_df(df_items, n=8)
-
-    X, y, sw, qid, cols = build_pointwise_dataset(forms=forms_df,df=df_items,sent_model=model,           
-        tau=tau,include_query_consts=True,anchors=anchors,id_col="id_etab",)
-
-    preproc = make_preproc_final() 
-
-    if clf_name == "LinearSVC":
-        clf = LinearSVC()
-    elif clf_name == "LogReg":
-        clf = LogisticRegression(max_iter=2000)
-    else:
-        from sklearn.ensemble import HistGradientBoostingClassifier
-        clf = HistGradientBoostingClassifier()
-
-    pipe = Pipeline([("preproc", preproc), ("clf", clf)])
-    pipe.fit(X, y, **({"clf__sample_weight": sw} if hasattr(clf, "fit") else {}))
-
-    if out_path is None:
-        out_path = os.getenv(
-            "RANK_MODEL_PATH",
-            str(Path("artifacts") / "linear_svc_pointwise.joblib")
-        )
-    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
-    joblib.dump(pipe, out_path)
-    print(f"[train] modèle sauvegardé -> {out_path}")
-    return out_path, cols

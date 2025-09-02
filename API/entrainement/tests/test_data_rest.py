@@ -1,6 +1,6 @@
 import numpy as np
 import pandas as pd
-import entrainement.benchmark_3 as e3
+import benchmark_3 as e3
 
 def _fake_catalog():
     df_etab = pd.DataFrame([
