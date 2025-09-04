@@ -1,57 +1,83 @@
 # conftest.py
+"""
+Postgres éphémère via testcontainers + override propre de l'engine SQLAlchemy.
+Les tests existants (client_realdb) restent inchangés.
+"""
 import os
-os.environ.setdefault("DISABLE_DB_INIT", "1") 
-os.environ.setdefault("DISABLE_WARMUP", "1")    
-
+import contextlib
+import importlib
 import pytest
-from sqlalchemy import create_engine, event, text
-from sqlalchemy.orm import sessionmaker, scoped_session
+from sqlalchemy import create_engine
+from sqlalchemy.orm import sessionmaker
+from testcontainers.postgres import PostgresContainer
 from fastapi.testclient import TestClient
 
-from API.main import app as fastapi_app
-from API import database as db
 
+def _engine_url_from_pg(pg: PostgresContainer) -> str:
+    """Force le driver psycopg2 pour SQLAlchemy."""
+    url = pg.get_connection_url()  # ex: postgresql://test:test@127.0.0.1:xxxxx/test
+    if url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
+    return url
+
+
+@pytest.fixture(scope="session")
+def pg():
+    """Démarre un Postgres jetable pour toute la session de tests."""
+    container = PostgresContainer("postgres:16-alpine")
+    container.start()
+    try:
+        yield container
+    finally:
+        with contextlib.suppress(Exception):
+            container.stop()
+
+
+@pytest.fixture(scope="session")
+def app(pg):
+    """
+    Configure l'environnement + l'engine AVANT d'importer l'app FastAPI.
+    """
+    # Env pour l'app
+    os.environ.setdefault("DISABLE_WARMUP", "1")     # pas de charge ML pendant les tests
+    os.environ.setdefault("SKIP_RANK_MODEL", "1")
+    os.environ.setdefault("API_STATIC_KEY", "coall")
+    os.environ.setdefault("JWT_SECRET", "coall")
+    os.environ.setdefault("REDIS_URL", "memory://")  # rate limiting en mémoire (pas de Redis requis)
+
+    # Expose aussi les variables PG (si ton code en dépend)
+    os.environ["POSTGRES_USER"] = pg.username
+    os.environ["POSTGRES_PASSWORD"] = pg.password
+    os.environ["POSTGRES_DB"] = pg.dbname
+    os.environ["POSTGRES_HOST"] = pg.get_container_host_ip()
+    os.environ["POSTGRES_PORT"] = pg.get_exposed_port(5432)
+
+    # URL SQLAlchemy
+    engine_url = _engine_url_from_pg(pg)
+    os.environ["DATABASE_URL"] = engine_url
+    os.environ["SQLALCHEMY_DATABASE_URL"] = engine_url
+
+    # Override explicite de l'engine et SessionLocal
+    database = importlib.import_module("API.database")
+    with contextlib.suppress(Exception):
+        database.engine.dispose()
+
+    database.engine = create_engine(engine_url, future=True)
+    database.SessionLocal = sessionmaker(
+        autocommit=False, autoflush=False, bind=database.engine
+    )
+
+    # Crée schéma/tables AVANT d'importer l'app
+    models = importlib.import_module("API.models")
+    models.ensure_ml_schema(database.engine)
+    models.Base.metadata.create_all(database.engine)
+
+    # Maintenant on peut charger l'app (qui importera l'engine override)
+    main = importlib.import_module("API.main")
+    return main.app
 
 
 @pytest.fixture
-def client_realdb(monkeypatch):
-    dsn = os.getenv("DATABASE_URL")
-    if not dsn:
-        pytest.skip("database non défini")
-    if "prod" in dsn.lower():
-        pytest.skip("Refus de tester sur une base 'prod'")
-
-    monkeypatch.setenv("DISABLE_DB_INIT", "0")
-    monkeypatch.setenv("DISABLE_WARMUP", "0")
-
-    engine = create_engine(dsn, pool_pre_ping=True)
-    connection = engine.connect()
-    trans = connection.begin()
-
-    TestingSession = sessionmaker(bind=connection, autocommit=False, autoflush=False)
-    session = scoped_session(TestingSession)
-
-    nested = session.begin_nested()
-    @event.listens_for(session, "after_transaction_end")
-    def _restart_savepoint(sess, trans_):
-        if trans_.nested and not trans_._parent.nested:
-            sess.begin_nested()
-
-    db.engine = engine
-    db.SessionLocal = TestingSession
-
-    def override_get_db():
-        try:
-            yield session
-        finally:
-            pass
-    fastapi_app.dependency_overrides[db.get_db] = override_get_db
-
-    try:
-        with TestClient(fastapi_app) as c:
-            yield c
-    finally:
-        session.remove()
-        trans.rollback()
-        connection.close()
-        fastapi_app.dependency_overrides.clear()
+def client_realdb(app):
+    """Client FastAPI branché sur le Postgres éphémère."""
+    return TestClient(app)

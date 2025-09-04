@@ -41,7 +41,6 @@ jobs:
           PYTHONPATH: ${{ github.workspace }} 
           E2E_API_BASE: http://127.0.0.1:8000
           E2E_CLIENT_BASE: http://127.0.0.1:8501
-          DATABASE_URL : postgresql://admin:admin123@localhost:5432/mydb
           E2E_STARTUP_TIMEOUT: "120"
         run: pytest -q
 
