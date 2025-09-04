@@ -71,6 +71,18 @@ models.ensure_ml_schema(engine)
 models._attach_external_tables(engine)
 models.Base.metadata.create_all(bind=engine)
 
+@app.on_event("startup")
+def _init_db_schema():
+    if os.getenv("DISABLE_DB_INIT", "0") == "1":
+        print("[startup] DB init disabled (DISABLE_DB_INIT=1).")
+        return
+    try:
+        models.ensure_ml_schema(engine)
+        models._attach_external_tables(engine)
+        models.Base.metadata.create_all(bind=engine)
+        print("[startup] DB schema ensured.")
+    except Exception as e:
+        print(f"[startup] DB init failed/skipped: {e}")
 
 @app.on_event("startup")
 def warmup():

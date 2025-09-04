@@ -1,5 +1,9 @@
 # conftest.py
-import os, pytest
+import os
+os.environ.setdefault("DISABLE_DB_INIT", "1") 
+os.environ.setdefault("DISABLE_WARMUP", "1")    
+
+import pytest
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker, scoped_session
 from fastapi.testclient import TestClient
@@ -12,14 +16,14 @@ from API import database as db
 @pytest.fixture
 def client_realdb(monkeypatch):
     dsn = os.getenv("DATABASE_URL")
-    API_STATIC_KEY = os.getenv("API_STATIC_KEY")
     if not dsn:
-        pytest.skip(f"database non défini")
+        pytest.skip("database non défini")
     if "prod" in dsn.lower():
         pytest.skip("Refus de tester sur une base 'prod'")
 
-    monkeypatch.setenv("DISABLE_WARMUP", "0")       
-    monkeypatch.setenv("SKIP_RANK_MODEL", "1")      
+    monkeypatch.setenv("DISABLE_DB_INIT", "0")
+    monkeypatch.setenv("DISABLE_WARMUP", "0")
+
     engine = create_engine(dsn, pool_pre_ping=True)
     connection = engine.connect()
     trans = connection.begin()
@@ -48,6 +52,6 @@ def client_realdb(monkeypatch):
             yield c
     finally:
         session.remove()
-        trans.rollback()   
+        trans.rollback()
         connection.close()
         fastapi_app.dependency_overrides.clear()
