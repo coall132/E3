@@ -42,7 +42,7 @@ def fake_catalog():
         {"id_etab": 2, "open_day": 6, "open_hour": 12, "close_day": 6, "close_hour": 14},
         {"id_etab": 3, "open_day": 6, "open_hour": 12, "close_day": 6, "close_hour": 23},
     ])
-    return {"etab": df_etab,"options": df_options,"etab_embedding": df_embed,"opening_period": df_open,}
+    return {"etab": df_etab,"options": df_options,"etab_embedding": df_embed,"opening_period": df_open}
 
 def fake_sentence_encoder(monkeypatch):
     class _FakeEncoder:
@@ -61,24 +61,18 @@ def fake_sentence_encoder(monkeypatch):
                         vec = vec / n
                 out.append(vec.astype(np.float32))
             return np.vstack(out)
+    # on remplace le modèle global utilisé par benchmark_3
     monkeypatch.setattr(e3, "SENT_MODEL", _FakeEncoder(), raising=True)
 
-
 def _infer_scores_for_form(df, form, preproc, X_items, model):
+    # 1) Embedding du formulaire
     Zf_sp = preproc.transform(e3.form_to_row(form, df))
     Zf = Zf_sp.toarray()[0] if hasattr(Zf_sp, "toarray") else np.asarray(Zf_sp)[0]
-
-    H = {
-        'price':  e3.h_price_vector_simple(df, form),
-        'rating': e3.h_rating_vector(df),
-        'city':   e3.h_city_vector(df, form),
-        'options':e3.h_opts_vector(df, form),
-        'open':   e3.h_open_vector(df, form, unknown_value=1.0),
-        'text':   e3.score_text(df, form, e3.SENT_MODEL),
-    }
-
-    Xq = e3.pair_features(Zf, H, X_items)
-
+    # 2) Features texte (N,2) attendues par pair_features
+    T_feat = e3.text_features01(df, form, e3.SENT_MODEL, k=e3.PROXY_K)
+    # 3) Features finales pour le modèle
+    Xq = e3.pair_features(Zf, X_items, T_feat)
+    # 4) Scores
     if hasattr(model, "decision_function"):
         scores = model.decision_function(Xq)
     elif hasattr(model, "predict_proba"):
@@ -88,9 +82,9 @@ def _infer_scores_for_form(df, form, preproc, X_items, model):
     ids = df["id_etab"].values
     return np.asarray(scores, float), ids
 
-
 def test_inference_end_to_end(tmp_path, monkeypatch):
-    monkeypatch.setattr(e3.Extract, "main", lambda: fake_catalog())
+    # >>> patch correct de la source de données
+    monkeypatch.setattr(e3.API.entrainement.Extract, "main", lambda: fake_catalog())
     fake_sentence_encoder(monkeypatch)
 
     forms = pd.DataFrame([
@@ -109,9 +103,10 @@ def test_inference_end_to_end(tmp_path, monkeypatch):
         os.chdir(tmp_path)
         os.environ["FORMS_CSV"] = str(forms_csv)
 
+        # entraîne et produit artifacts/rank_model.joblib
         e3.main_entrainement()
 
-        model_path = Path("artifacts/linear_svc_pointwise.joblib")
+        model_path = Path("artifacts/rank_model.joblib")
         assert model_path.exists()
 
         df = e3.load_and_prepare_catalog()
@@ -121,29 +116,22 @@ def test_inference_end_to_end(tmp_path, monkeypatch):
 
         model = joblib.load(model_path)
 
-        # 6) Cas d'inférence 1 : on veut forcer le texte à pointer vers l'item 1
-        #    Notre encoder fake renvoie [1,0,0] quand len(description) % 3 == 0.
-        form1 = {"description": "x" * 6  }
+        # Cas 1 : len % 3 == 0 -> vecteur [1,0,0] -> item 1 favorisé
+        form1 = {"description": "x" * 6}
         scores, ids = _infer_scores_for_form(df, form1, preproc, X_items, model)
-
-        # Vérifs de base
-        assert len(scores) == len(df) == len(ids)
-        # tri décroissant
         order = np.argsort(scores)[::-1]
+        assert len(scores) == len(df) == len(ids)
         assert np.all(scores[order[:-1]] >= scores[order[1:]])
+        assert int(ids[order[0]]) == 1
 
-        # Le top-1 doit être l'id_etab = 1 (puisque le texte matche [1,0,0])
-        top1_id = ids[order[0]]
-        assert int(top1_id) == 1
-
-        # 7) Cas d'inférence 2 : texte qui pointe vers l'item 2 (len % 3 == 1)
-        form2 = {"description": "xxxxxxx"}  
+        # Cas 2 : len % 3 == 1 -> item 2
+        form2 = {"description": "xxxxxxx"}  # 7
         scores2, ids2 = _infer_scores_for_form(df, form2, preproc, X_items, model)
         order2 = np.argsort(scores2)[::-1]
         assert int(ids2[order2[0]]) == 2
 
-        # 8) Cas d'inférence 3 : texte qui pointe vers l'item 3 (len % 3 == 2)
-        form3 = {"description": "xxxxx"}  
+        # Cas 3 : len % 3 == 2 -> item 3
+        form3 = {"description": "xxxxx"}  # 5
         scores3, ids3 = _infer_scores_for_form(df, form3, preproc, X_items, model)
         order3 = np.argsort(scores3)[::-1]
         assert int(ids3[order3[0]]) == 3

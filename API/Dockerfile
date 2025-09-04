@@ -30,8 +30,10 @@ COPY ./API /app/API
 FROM deps AS prod
 
 # Copy trained model ONLY in prod
-COPY ./API/artifacts/linear_svc_pointwise.joblib /app/artifacts/linear_svc_pointwise.joblib
-ENV RANK_MODEL_PATH=/app/artifacts/linear_svc_pointwise.joblib \
+COPY ./API/artifacts/rank_model.joblib /app/artifacts/rank_model.joblib
+COPY ./API/artifacts/preproc_items.joblib /app/artifacts/preproc_items.joblib
+ENV RANK_MODEL_PATH=/app/artifacts/rank_model.joblib \ 
+    PREPROC_PATH=/app/artifacts/preproc_items.joblib \
     SKIP_RANK_MODEL=0
 
 EXPOSE 8000

@@ -24,17 +24,24 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.ensemble import RandomForestClassifier, HistGradientBoostingClassifier
 from sklearn.svm import LinearSVC
 from sklearn.model_selection import train_test_split
+import lightgbm as lgb
 
 import matplotlib.pyplot as plt
 
-import Extract
+import API.entrainement.Extract
+import API.utils 
 
+PROXY_W_REV = 0.5
+PROXY_K = 2
+
+EVAL_W_REV = 0.8
+EVAL_K = 5
 # =========================================================
 #            UTILITAIRES GÉNÉRAUX (FORM / FEATURES)
 # =========================================================
 def _artifacts_dir() -> Path:
-    """Crée (si besoin) et retourne le dossier de sortie."""
-    d = Path(os.getenv("ARTIFACTS_DIR", "API/artifacts"))
+    api_root = Path(__file__).resolve().parents[1]
+    d = api_root / "artifacts"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -160,7 +167,7 @@ def load_and_prepare_catalog() -> pd.DataFrame:
       - horaire_features (profils 'ouvert_*')
       - merge embeddings (desc_embed, rev_embeds) -> conversion en np.ndarray
     """
-    all_dfs = Extract.main()
+    all_dfs = API.entrainement.Extract.main()
     df_etab      = all_dfs['etab'].copy()
     df_options   = all_dfs['options'].copy()
     df_embed     = all_dfs['etab_embedding'].copy()
@@ -288,7 +295,7 @@ def topk_mean_cosine(mat_or_list, z, k=3):
     idx = np.argpartition(sims, -k)[-k:]
     return float(np.mean(sims[idx]))
 
-def score_text(df, form, model, w_rev=0.6, w_desc=0.4, k=3, missing_cos=0.0):
+def score_text(df, form, model, w_rev=0.5, w_desc=0.5, k=3, missing_cos=0.0):
     q = (fget(form, 'description', '') or '').strip()
     if not q:
         return np.ones(len(df), dtype=float)
@@ -334,7 +341,7 @@ def score_text(df, form, model, w_rev=0.6, w_desc=0.4, k=3, missing_cos=0.0):
 def h_price_vector_simple(df, form):
     lvl_f = fget(form, 'price_level', None)
     if lvl_f is None:
-        return np.ones(len(df), dtype=float)
+        return np.full(len(df), 0.5, dtype=float)
     diff = (df['priceLevel'].astype(float) - float(lvl_f)).abs()
     return (1.0 - (diff/3.0)).clip(0.0, 1.0).to_numpy(dtype=float)
 
@@ -356,7 +363,7 @@ def h_city_vector(df, form):
         pcs = [pcs]
     pcs = [str(x).strip() for x in pcs if str(x).strip()]
     if not pcs:
-        return np.ones(len(df), dtype=float)
+        return np.full(len(df), 0.5, dtype=float)
     s = df['code_postal'].astype(str).str.strip()
     return s.isin(pcs).astype(float).to_numpy()
 
@@ -380,14 +387,14 @@ def _extract_requested_options(form, df_catalog):
 def h_opts_vector(df, form):
     req = _extract_requested_options(form, df)
     if not req:
-        return np.ones(len(df), dtype=float)
+        return np.full(len(df), 0.5, dtype=float)   
     sub = df[req].fillna(False).astype(int).to_numpy()
     return sub.mean(axis=1).astype(float)
 
-def h_open_vector(df, form, unknown_value=1.0):
+def h_open_vector(df, form, unknown_value=0.5):
     col = fget(form, 'open', None)
     if not col or col not in df.columns:
-        return np.ones(len(df), dtype=float)
+        return np.full(len(df), 0.5, dtype=float)
     cols = [c for c in df.columns if c.startswith(col)]
     if not cols:
         return np.ones(len(df), dtype=float)
@@ -403,10 +410,10 @@ def score_func(df, form, model):
         "city":    h_city_vector(df, form),
         "options": h_opts_vector(df, form),
         "open":    h_open_vector(df, form, unknown_value=1.0),
-        "text":    score_text(df, form, model, w_rev=0.6, w_desc=0.4, k=3, missing_cos=0.0),
+        "text":    score_text(df, form, model, w_rev=0.5, w_desc=0.5, k=3, missing_cos=0.0),
     }
 
-def aggregate_gains(H: Dict[str, np.ndarray], weights: Dict[str, float]) -> np.ndarray:
+def aggregate_gains(H: Dict[str, np.ndarray], weights: Dict[str, float]):
     keys = list(H)
     W = np.array([float(weights[k]) for k in keys], dtype=float)
     gains = np.zeros_like(np.asarray(H[keys[0]], dtype=float), dtype=float)
@@ -414,11 +421,66 @@ def aggregate_gains(H: Dict[str, np.ndarray], weights: Dict[str, float]) -> np.n
         gains += w * np.asarray(H[k], dtype=float)
     return gains / W.sum()
 
+def text_features(df, form, model, k=PROXY_K):
+    q = (fget(form,'description','') or '').strip()
+    N = len(df)
+    if not q:
+        return np.zeros((N, 2), dtype=np.float32)
+    z = model.encode([q], normalize_embeddings=True, show_progress_bar=False)[0].astype(np.float32)
 
-def pair_features(Zf, H, X_items, diff_scale=0.05):
-    diff = np.abs(X_items - Zf.reshape(1, -1)) * float(diff_scale)
-    cos  = np.asarray(H['text'], float)[:, None]
-    return np.hstack([diff, cos]).astype(np.float32)
+    desc = df.get('desc_embed', [None]*N)
+    cos_desc = np.array([float(v @ z) if isinstance(v, np.ndarray) and v.ndim==1 and v.size>0 else 0.0
+                         for v in desc], dtype=np.float32)
+
+    revs = df.get('rev_embeds', [None]*N)
+    cos_rev = np.array([(topk_mean_cosine(r, z, k=k) or 0.0) for r in revs], dtype=np.float32)
+
+    # Optionnel: map [-1,1] -> [0,1]
+    cos_desc = (cos_desc + 1.0)/2.0
+    cos_rev  = (cos_rev  + 1.0)/2.0
+    return np.stack([cos_desc, cos_rev], axis=1)
+
+def text_features01(df, form, model, k=3, missing_cos=0.0):
+    """
+    Retourne un array (N,2) dans [0,1] :
+      [:,0] = cos_desc01,  [:,1] = cos_rev_topk01
+    """
+    q = (fget(form, 'description', '') or '').strip()
+    N = len(df)
+    out = np.zeros((N, 2), dtype=np.float32)
+
+    if not q:
+        out[:] = 1.0   # neutre si pas de texte
+        return out
+
+    z = model.encode([q], normalize_embeddings=True, show_progress_bar=False)[0].astype(np.float32)
+
+    # cos avec la description
+    cos_d = np.full(N, np.nan, dtype=np.float32)
+    desc_list = df.get('desc_embed', None)
+    if desc_list is not None:
+        for i, v in enumerate(desc_list):
+            if isinstance(v, np.ndarray) and v.ndim == 1 and v.size > 0:
+                cos_d[i] = float(np.dot(v.astype(np.float32), z))
+
+    # cos top-k sur les reviews
+    cos_r = np.full(N, np.nan, dtype=np.float32)
+    rev_list = df.get('rev_embeds', None)
+    if rev_list is not None:
+        for i, lst in enumerate(rev_list):
+            val = topk_mean_cosine(lst, z, k=k)
+            if val is not None:
+                cos_r[i] = float(val)
+
+    # remplit les manquants et passe en [0,1]
+    cos_d = np.where(np.isnan(cos_d), missing_cos, cos_d)
+    cos_r = np.where(np.isnan(cos_r), missing_cos, cos_r)
+    return np.stack([(cos_d + 1.0) / 2.0, (cos_r + 1.0) / 2.0], axis=1)
+
+def pair_features(Zf, X_items, T, diff_scale=0.05):
+    diff = np.abs(X_items - Zf.reshape(1, -1)) * float(diff_scale)  # (N, d)
+    T = np.asarray(T, dtype=np.float32)                             # (N, 2) = [cos_desc01, cos_rev01]
+    return np.hstack([diff, T]).astype(np.float32)
 
 # =========================================================
 #           PRÉPROC ITEM (colonnes classiques)
@@ -436,29 +498,57 @@ def build_preproc_for_items(df: pd.DataFrame):
     bool_cols_present = [c for c in BOOL_COLS if c in df.columns]
     bool_categories = [np.array([0, 1], dtype=int) for _ in bool_cols_present]
 
-    num_pipe  = Pipeline([('impute', SimpleImputer(strategy='constant', fill_value=0)),
-                          ('scale', StandardScaler())])
-    bool_pipe = Pipeline([
-        ('toint', FunctionTransformer(lambda X: X.astype(int))),
-        ('onehot', OneHotEncoder(categories=bool_categories,drop='if_binary',handle_unknown='ignore',sparse_output=True))])
-    lev_pipe  = Pipeline([('impute', SimpleImputer(strategy='constant', fill_value=0)),
-                          ('scale', StandardScaler())])
+    # Numériques
+    num_pipe  = Pipeline([
+        ('impute', SimpleImputer(strategy='constant', fill_value=0)),
+        ('scale', StandardScaler())
+    ])
 
-    # ⬇️ plus de transformer "text"
+    # Booléens -> OneHot (0/1)
+    bool_pipe = Pipeline([
+        ('toint', FunctionTransformer(API.utils.to_int_safe, validate=False, feature_names_out='one-to-one')),
+        ('onehot', OneHotEncoder(
+            categories=bool_categories,
+            drop='if_binary',
+            handle_unknown='ignore',
+            sparse_output=True
+        ))
+    ])
+
+    # priceLevel
+    lev_pipe  = Pipeline([
+        ('impute', SimpleImputer(strategy='constant', fill_value=0)),
+        ('scale', StandardScaler())
+    ])
+
+    # 🔹 Nouveau : code_postal (catégorie texte) -> OneHot
+    #   - imputation au mode
+    #   - handle_unknown='ignore' pour éviter les erreurs si un CP apparaît en prod
+    cp_pipe = Pipeline([
+        ('impute', SimpleImputer(strategy='most_frequent')),
+        ('onehot', OneHotEncoder(handle_unknown='ignore', sparse_output=True))
+    ])
+
+    transformers = [
+        ("num",  num_pipe,  [c for c in NUM_COLS if c in df.columns]),
+        ("bool", bool_pipe, [c for c in BOOL_COLS if c in df.columns]),
+        ("lev",  lev_pipe,  [lev] if lev in df.columns else []),
+    ]
+
+    # On n’ajoute cp que s’il existe dans le catalogue
+    if 'code_postal' in df.columns:
+        transformers.append(("cp", cp_pipe, ['code_postal']))
+
     return ColumnTransformer(
-        transformers=[
-            ("num",  num_pipe,  [c for c in NUM_COLS if c in df.columns]),
-            ("bool", bool_pipe, [c for c in BOOL_COLS if c in df.columns]),
-            ("lev",  lev_pipe,  [lev] if lev in df.columns else []),
-        ],
+        transformers=transformers,
         remainder="drop",
     )
 
 # =========================================================
 #          GÉNÉRATION DATASETS & MÉTRIQUES RANKING
 # =========================================================
-W_proxy = {'price':0.18,'rating':0.14,'options':0.14,'text':0.28,'city':0.04,'open':0.04}
-W_eval  = {'price':0.12,'rating':0.18,'options':0.12,'text':0.22,'city':0.20,'open':0.16}
+W_eval     = {'price':0.08,'rating':0.10,'options':0.10,'text':0.52,'city':0.15,'open':0.05}
+W_proxy     = {'price':0.22,'rating':0.18,'options':0.10,'text':0.20,'city':0.10,'open':0.20}
 tau = 0.60
 
 def form_to_row(form, df_catalog):
@@ -491,21 +581,34 @@ def form_to_row(form, df_catalog):
 def build_pointwise(forms_df, preproc, df, X_items, SENT_MODEL, tau=tau, W=W_proxy):
     X_list, y_list, sw_list, qid_list = [], [], [], []
     n_items = len(df)
+
     for qid, form in enumerate(_iter_forms(forms_df), start=0):
         Zf_sp = preproc.transform(form_to_row(form, df))
         Zf = Zf_sp.toarray()[0] if hasattr(Zf_sp, "toarray") else np.asarray(Zf_sp)[0]
-        H = {
-            'price':  h_price_vector_simple(df, form),
-            'rating': h_rating_vector(df),
-            'city':   h_city_vector(df, form),
-            'options':h_opts_vector(df, form),
-            'open':   h_open_vector(df, form, unknown_value=1.0),
-            'text':   score_text(df, form, SENT_MODEL),
+
+        # Non-texte
+        H_no_text = {
+            'price':   h_price_vector_simple(df, form),
+            'rating':  h_rating_vector(df),
+            'city':    h_city_vector(df, form),
+            'options': h_opts_vector(df, form),
+            'open':    h_open_vector(df, form, unknown_value=1.0),
         }
-        gains = aggregate_gains(H, W)
+
+        # Texte : features brutes (N,2) et agrégat pour le label
+        T = text_features01(df, form, SENT_MODEL, k=PROXY_K)
+        text_proxy = PROXY_W_REV * T[:, 1] + (1.0 - PROXY_W_REV) * T[:, 0]
+
+        # Gains/labels = règle proxy complète (inclut le texte), mais
+        # on NE donne PAS l’agrégat comme feature
+        H_lbl = {**H_no_text, 'text': text_proxy}
+        gains = aggregate_gains(H_lbl, W)
+
         y  = (gains >= tau).astype(int)
         sw = np.abs(gains - tau) + 1e-3
-        Xq = pair_features(Zf, H, X_items)
+
+        # Features modèle
+        Xq = pair_features(Zf, X_items, T)
 
         X_list.append(Xq); y_list.append(y); sw_list.append(sw)
         qid_list.append(np.full(n_items, qid, dtype=int))
@@ -518,28 +621,110 @@ def build_pointwise(forms_df, preproc, df, X_items, SENT_MODEL, tau=tau, W=W_pro
 
 def build_pairwise(forms_df, preproc, df, X_items, SENT_MODEL, tau=tau, W=W_proxy, top_m=10, bot_m=10):
     Xp, yp, wp = [], [], []
+
     for form in _iter_forms(forms_df):
         Zf_sp = preproc.transform(form_to_row(form, df))
         Zf = Zf_sp.toarray()[0] if hasattr(Zf_sp, "toarray") else np.asarray(Zf_sp)[0]
-        H = {
-            'price':  h_price_vector_simple(df, form),
-            'rating': h_rating_vector(df),
-            'city':   h_city_vector(df, form),
-            'options':h_opts_vector(df, form),
-            'open':   h_open_vector(df, form, unknown_value=1.0),
-            'text':   score_text(df, form, SENT_MODEL),
+
+        # Non-texte
+        H_no_text = {
+            'price':   h_price_vector_simple(df, form),
+            'rating':  h_rating_vector(df),
+            'city':    h_city_vector(df, form),
+            'options': h_opts_vector(df, form),
+            'open':    h_open_vector(df, form, unknown_value=1.0),
         }
-        gains = aggregate_gains(H, W)
+
+        # Texte
+        T = text_features01(df, form, SENT_MODEL, k=PROXY_K)
+        text_proxy = PROXY_W_REV * T[:, 1] + (1.0 - PROXY_W_REV) * T[:, 0]
+
+        # Gains pour choisir pos/neg
+        H_lbl = {**H_no_text, 'text': text_proxy}
+        gains = aggregate_gains(H_lbl, W)
+
         order = np.argsort(gains)
         pos_idx = order[::-1][:top_m]
         neg_idx = order[:bot_m]
-        Xq = pair_features(Zf, H, X_items)
+
+        # Features modèle
+        Xq = pair_features(Zf, X_items, T)
+
         for ip in pos_idx:
             for ineg in neg_idx:
                 Xp.append(Xq[ip] - Xq[ineg])
                 yp.append(1)
                 wp.append(float(gains[ip] - gains[ineg]))
+
     return np.vstack(Xp).astype(np.float32), np.array(yp), np.array(wp, dtype=float)
+
+def gains_to_labels_per_query(gains: np.ndarray, q=(0.50, 0.75, 0.90)) -> np.ndarray:
+    """
+    Quantifie des gains continus en grades {0,1,2,3} par requête.
+    q = quantiles -> 4 classes.
+    Garantit au moins 2 grades présents.
+    """
+    gains = np.asarray(gains, dtype=float)
+    # bornage soft
+    if np.allclose(gains.min(), gains.max()):
+        # tout égal -> force 1 positif pour éviter groupe dégénéré
+        y = np.zeros_like(gains, dtype=int)
+        y[np.argmax(gains)] = 1
+        return y
+
+    qs = np.quantile(gains, q)
+    y = np.digitize(gains, bins=qs).astype(int)  # 0..len(q)
+    if len(np.unique(y)) < 2:
+        # force un peu de diversité
+        top = np.argpartition(gains, -3)[-3:]
+        y[top] = 1
+    return y
+
+def build_listwise(forms_df, preproc, df, X_items, SENT_MODEL, W=W_proxy, jitter=1e-6):
+    X_list, y_list, groups = [], [], []
+    n_items = len(df)
+
+    for form in _iter_forms(forms_df):
+        # ----- embedding du formulaire -----
+        Zf_sp = preproc.transform(form_to_row(form, df))
+        Zf = Zf_sp.toarray()[0] if hasattr(Zf_sp, "toarray") else np.asarray(Zf_sp)[0]
+
+        # ----- composantes non-texte (features "règles") -----
+        H_no_text = {
+            'price':   h_price_vector_simple(df, form),
+            'rating':  h_rating_vector(df),
+            'city':    h_city_vector(df, form),
+            'options': h_opts_vector(df, form),
+            'open':    h_open_vector(df, form, unknown_value=1.0),
+        }
+
+        # ----- TEXTE : features brutes pour le modèle -----
+        # renvoie un tableau (N, 2) dans [0,1] : [cos_desc01, cos_rev01]
+        T_feat = text_features01(df, form, SENT_MODEL, k=PROXY_K)
+        cos_desc01 = T_feat[:, 0]
+        cos_rev01  = T_feat[:, 1]
+
+        # ----- TEXTE : agrégat UNIQUEMENT pour fabriquer les labels -----
+        text_proxy = PROXY_W_REV * cos_rev01 + (1.0 - PROXY_W_REV) * cos_desc01
+        H_lbl = {**H_no_text, 'text': text_proxy}
+
+        # gains -> labels (listwise)
+        gains_eval = aggregate_gains(H_lbl, W).astype(float)
+        if jitter:
+            gains_eval = gains_eval + float(jitter) * np.random.randn(len(gains_eval))
+        yq = gains_to_labels_per_query(gains_eval, q=(0.50, 0.75, 0.90))
+
+        # ----- FEATURES modèle : sans agrégat texte -----
+        Xq = pair_features(Zf, X_items, T_feat)  # T_feat (N,2)
+
+        X_list.append(Xq)
+        y_list.append(yq)
+        groups.append(n_items)
+
+    X = np.vstack(X_list)
+    y = np.concatenate(y_list)
+    return X, y, groups
+
 
 def precision_at_k(pred, gold, k):
     idx = np.asarray(pred, dtype=int)[:k]
@@ -554,19 +739,27 @@ def dcg_at_k(r, k):
         return 0.0
     return r[0] + (r[1:] / np.log2(np.arange(2, r.size + 1))).sum()
 
-def ndcg_binary_at_k(pred, gold, k):
-    n = len(pred)
+def ndcg_gain_at_k(pred, gains, k):
     idx = np.asarray(pred, dtype=int)[:k]
-    rel = np.zeros(n, dtype=float)
-    if not isinstance(gold, (set, frozenset)):
-        gold = set(gold)
-    if gold:
-        rel[list(gold)] = 1.0
+    rel = np.asarray(gains, dtype=float)
     dcg = dcg_at_k(rel[idx], k)
-    ideal_k = min(k, int(rel.sum()))
-    if ideal_k == 0:
-        return 0.0
-    idcg = dcg_at_k(np.ones(ideal_k, dtype=float), ideal_k)
+    ideal = np.sort(rel)[::-1][:k]
+    idcg = dcg_at_k(ideal, k)
+    return float(dcg / idcg) if idcg > 0 else 0.0
+
+def ndcg_binary_at_k(pred, gold, k):
+    n = len(pred) 
+    idx = np.asarray(pred, dtype=int)[:k] 
+    rel = np.zeros(n, dtype=float) 
+    if not isinstance(gold, (set, frozenset)): 
+        gold = set(gold) 
+    if gold: 
+        rel[list(gold)] = 1.0 
+        dcg = dcg_at_k(rel[idx], k) 
+        ideal_k = min(k, int(rel.sum())) 
+    if ideal_k == 0: 
+        return 0.0 
+    idcg = dcg_at_k(np.ones(ideal_k, dtype=float), ideal_k) 
     return float(dcg / idcg) if idcg > 0 else 0.0
 
 def recall_at_k(pred, gold, k):
@@ -612,6 +805,67 @@ def mrr_at_k(pred, gold, k):
             return 1.0 / i
     return 0.0
 
+def dcg_binary_at_k(pred, gold, k):
+    """
+    DCG binaire sur le top-k.
+    gold : set d’indices pertinents
+    """
+    idx = np.asarray(pred, dtype=int)[:k]
+    rel = np.array([1.0 if i in gold else 0.0 for i in idx], dtype=float)
+    return dcg_at_k(rel, k)
+
+
+def _count_inversions(arr):
+    # décompte d’inversions O(n log n) (merge sort)
+    def merge_count(a):
+        n = len(a)
+        if n <= 1:
+            return a, 0
+        m = n // 2
+        left, inv_l = merge_count(a[:m])
+        right, inv_r = merge_count(a[m:])
+        merged = []
+        i = j = inv = 0
+        while i < len(left) and j < len(right):
+            if left[i] <= right[j]:
+                merged.append(left[i]); i += 1
+            else:
+                merged.append(right[j]); j += 1
+                inv += len(left) - i
+        merged.extend(left[i:]); merged.extend(right[j:])
+        return merged, inv_l + inv_r + inv
+    _, inv = merge_count(list(arr))
+    return inv
+
+def _active_weights(form, base_w, df):
+    w = base_w.copy()
+    if fget(form, 'price_level', None) is None: w['price'] = 0.0
+    if not _extract_requested_options(form, df):    w['options'] = 0.0
+    if not fget(form, 'code_postal', None):         w['city'] = 0.0
+    if not fget(form, 'open', None):                w['open'] = 0.0
+    s = sum(w.values()); 
+    if s > 0: w = {k: v/s for k, v in w.items()}
+    return w
+
+def kendall_tau_at_k(pred, gains_eval, k):
+    """
+    Kendall’s tau (tau-a) sur le top-k, en comparant l’ordre prédit au top-k idéal (tri par gains_eval).
+    On calcule τ sur l’**intersection** des items (pour éviter les éléments hors top-k idéal).
+    """
+    pred = np.asarray(pred, dtype=int)[:k]
+    true_topk = np.argsort(gains_eval)[::-1][:k]
+    pos_true = {itm: r for r, itm in enumerate(true_topk)}
+    common = [itm for itm in pred if itm in pos_true]
+    n = len(common)
+    if n < 2:
+        return 0.0
+    # séquence des rangs "vrais" dans l’ordre prédit
+    seq = [pos_true[itm] for itm in common]
+    inv = _count_inversions(seq)
+    total = n * (n - 1) // 2
+    return 1.0 - 2.0 * inv / total
+
+
 def _bootstrap_ci(values, n_boot=300, alpha=0.05, rng=None):
     values = np.asarray(values, dtype=float)
     if values.size == 0:
@@ -641,9 +895,17 @@ def eval_benchmark(forms_df, preproc, df, X_items, SENT_MODEL, models, k=5,
             'city':   h_city_vector(df, form),
             'options':h_opts_vector(df, form),
             'open':   h_open_vector(df, form, unknown_value=1.0),
-            'text':   score_text(df, form, SENT_MODEL),
         }
-        gains_eval = aggregate_gains(H, W_eval).astype(float)
+        T_eval  = text_features01(df, form, SENT_MODEL, k=EVAL_K) 
+        cos_desc01 = T_eval[:, 0]
+        cos_rev01  = T_eval[:, 1]
+
+        # Agrégat texte UNIQUEMENT pour le gold (métriques)
+        text_eval = EVAL_W_REV * cos_rev01 + (1.0 - EVAL_W_REV) * cos_desc01
+        H_eval = {**H, 'text': text_eval}
+
+        W_eval_q  = _active_weights(form, W_eval,  df)
+        gains_eval = aggregate_gains(H_eval, W_eval_q).astype(float)
         if jitter:
             gains_eval = gains_eval + float(jitter) * np.random.randn(len(gains_eval))
         if use_top_m is not None:
@@ -658,20 +920,38 @@ def eval_benchmark(forms_df, preproc, df, X_items, SENT_MODEL, models, k=5,
             f"R@{k}": recall_at_k(rand_pred, gold, k),
             f"MAP@{k}": ap_at_k(rand_pred, gold, k),
             f"MRR@{k}": mrr_at_k(rand_pred, gold, k),
-            f"NDCG@{k}": ndcg_binary_at_k(rand_pred, gold, k),
+            f"NDCG@{k}": ndcg_gain_at_k(rand_pred,gains_eval, k),
+            f"BinaryNDCG@{k}": ndcg_binary_at_k(rand_pred, gold, k),
+            f"BinaryDCG@{k}": dcg_binary_at_k(rand_pred, gold, k),
+            f"Tau@{k}": kendall_tau_at_k(rand_pred, gains_eval, k),
+
         })
 
-        gains_proxy = aggregate_gains(H, W_proxy)
+        T_proxy = text_features01(df, form, SENT_MODEL, k=PROXY_K)
+        text_proxy = PROXY_W_REV * T_proxy[:, 1] + (1.0 - PROXY_W_REV) * T_proxy[:, 0]
+        H_proxy = {**H, 'text': text_proxy}
+        W_proxy_q = _active_weights(form, W_proxy, df)
+        gains_proxy = aggregate_gains(H_proxy, W_proxy_q)
         pred_rule = np.argsort(gains_proxy)[::-1]
+
+        corr = np.corrcoef(gains_proxy, gains_eval)[0,1]
+        print(f"corr(proxy, eval)={corr:.3f}, |gold|={len(gold)}")
+
+        assert any(abs(W_proxy[k]-W_eval[k]) > 1e-9 for k in W_eval), \
+            "W_proxy et W_eval sont identiques -> RuleProxy deviendra oracle."
         per_model["RuleProxy"].append({
             f"P@{k}": precision_at_k(pred_rule, gold, k),
             f"R@{k}": recall_at_k(pred_rule, gold, k),
             f"MAP@{k}": ap_at_k(pred_rule, gold, k),
             f"MRR@{k}": mrr_at_k(pred_rule, gold, k),
-            f"NDCG@{k}": ndcg_binary_at_k(pred_rule, gold, k),
-        })
+            f"NDCG@{k}": ndcg_gain_at_k(pred_rule, gains_eval, k),
+            f"BinaryNDCG@{k}": ndcg_binary_at_k(pred_rule, gold, k),
+            f"BinaryDCG@{k}": dcg_binary_at_k(pred_rule, gold, k),
+            f"Tau@{k}": kendall_tau_at_k(pred_rule, gains_eval, k),
+        })  
 
-        Xq = pair_features(Zf, H, X_items)
+        T_feat  = text_features01(df, form, SENT_MODEL, k=PROXY_K)
+        Xq = pair_features(Zf, X_items, T_feat)
         for name, m in models.items():
             if hasattr(m, "predict_proba"):
                 scores = m.predict_proba(Xq)[:, 1]
@@ -685,11 +965,14 @@ def eval_benchmark(forms_df, preproc, df, X_items, SENT_MODEL, models, k=5,
                 f"R@{k}": recall_at_k(pred, gold, k),
                 f"MAP@{k}": ap_at_k(pred, gold, k),
                 f"MRR@{k}": mrr_at_k(pred, gold, k),
-                f"NDCG@{k}": ndcg_binary_at_k(pred, gold, k),
+                f"NDCG@{k}": ndcg_gain_at_k(pred, gains_eval, k),
+                f"BinaryNDCG@{k}": ndcg_binary_at_k(pred, gold, k),
+                f"BinaryDCG@{k}": dcg_binary_at_k(pred, gold, k),
+                f"Tau@{k}": kendall_tau_at_k(pred, gains_eval, k),
             })
 
     rows, perq_rows = {}, []
-    keep = [f"P@{k}", f"R@{k}", f"MAP@{k}", f"MRR@{k}", f"NDCG@{k}"]
+    keep = keep = [f"P@{k}", f"R@{k}", f"MAP@{k}", f"MRR@{k}", f"NDCG@{k}", f"BinaryDCG@{k}", f"Tau@{k}",f"BinaryNDCG@{k}"]
     for name, lst in per_model.items():
         if not lst:
             continue
@@ -757,7 +1040,7 @@ def _build_pointwise_for(forms_subset, preproc, df, X_items, tau_val):
 def _eval_ndcg5(forms_subset, preproc, df, X_items, model_name, model_obj, n_boot=50):
     summary, _ = eval_benchmark(
         forms_subset, preproc, df, X_items, SENT_MODEL, {model_name: model_obj},
-        k=5, tau_q=0.85, use_top_m=None, jitter=1e-6, n_boot=n_boot
+        k=5, tau_q=0.85, use_top_m=10, jitter=1e-6, n_boot=n_boot
     )
     # retourne 0 si le modèle n'a pas de métrique (sécurité)
     col = "NDCG@5_mean"
@@ -800,7 +1083,7 @@ def temp_text_params(w_rev=None, k=None):
     _w = w_rev
     _k = k
 
-    def patched(df, form, model, w_rev=0.6, w_desc=0.4, k=3, missing_cos=0.0):
+    def patched(df, form, model, w_rev=0.5, w_desc=0.5, k=3, missing_cos=0.0):
         # force w_rev / k si fournis, et ajuste w_desc = 1 - w_rev
         w = _w if _w is not None else w_rev
         return orig(df, form, model,
@@ -822,7 +1105,7 @@ def _build_pointwise_for(forms_subset, preproc, df, X_items, tau_val):
 def _eval_ndcg5(forms_subset, preproc, df, X_items, model_name, model_obj, n_boot=40):
     summary, _ = eval_benchmark(
         forms_subset, preproc, df, X_items, SENT_MODEL, {model_name: model_obj},
-        k=5, tau_q=0.85, use_top_m=None, jitter=1e-6, n_boot=n_boot
+        k=5, tau_q=0.85, use_top_m=10, jitter=1e-6, n_boot=n_boot
     )
     col = "NDCG@5_mean"
     return float(summary.loc[model_name, col]) if (model_name in summary.index and col in summary.columns) else 0.0
@@ -919,7 +1202,7 @@ def grid_search_pair_svm(forms_tr_inner, forms_va, preproc, df, X_items,
                          grid_C=(0.25, 0.5, 1.0, 2.0),
                          grid_loss=("hinge", "squared_hinge"),
                          n_boot_eval=20, verbose=True):
-    Xp, yp, wp = build_pairwise(forms_tr_inner, preproc, df, X_items, SENT_MODEL, W=W_eval, top_m=10, bot_m=10)
+    Xp, yp, wp = build_pairwise(forms_tr_inner, preproc, df, X_items, SENT_MODEL, W=W_proxy, top_m=10, bot_m=10)
     Xp2 = np.vstack([Xp, -Xp]); yp2 = np.concatenate([np.ones(len(Xp)), np.zeros(len(Xp))]); wp2 = np.concatenate([wp, wp])
 
     best = {"score": -1.0}
@@ -940,7 +1223,7 @@ def grid_search_pair_lr(forms_tr_inner, forms_va, preproc, df, X_items,
                         grid_C=(0.25, 0.5, 1.0, 2.0, 4.0),
                         grid_cw=(None, "balanced"),
                         n_boot_eval=20, verbose=True):
-    Xp, yp, wp = build_pairwise(forms_tr_inner, preproc, df, X_items, SENT_MODEL, W=W_eval, top_m=10, bot_m=10)
+    Xp, yp, wp = build_pairwise(forms_tr_inner, preproc, df, X_items, SENT_MODEL, W=W_proxy, top_m=10, bot_m=10)
     Xp2 = np.vstack([Xp, -Xp]); yp2 = np.concatenate([np.ones(len(Xp)), np.zeros(len(Xp))]); wp2 = np.concatenate([wp, wp])
 
     best = {"score": -1.0}
@@ -959,6 +1242,75 @@ def grid_search_pair_lr(forms_tr_inner, forms_va, preproc, df, X_items,
     if verbose:
         print(f"[GS PairLogReg] BEST -> {best}")
     return best
+
+
+def grid_search_lgbm_ranker(forms_tr_inner, forms_va, preproc, df, X_items,
+                             grid_lr=(0.03, 0.05, 0.10),
+                             grid_leaves=(31, 63, 127),
+                             grid_min_child=(5, 10, 20),
+                             grid_l2=(0.0, 1e-3, 1e-2),
+                             grid_subsample=(1.0,0.8),
+                             grid_colsample=(1.0,0.8),
+                             n_estimators=300,
+                             n_boot_eval=25):
+    """
+    Liste de paramètres raisonnable pour LambdaRank (listwise).
+    On évalue via _eval_ndcg5 (qui reconstruit Xq et appelle model.predict).
+    """
+    if lgb is None:
+        print("[LGBMRanker] LightGBM non installé -> skip listwise.")
+        return None
+
+    best = {"score": -1.0}
+    # Construit train/valid listwise une seule fois
+    Xtr, ytr, gtr = build_listwise(forms_tr_inner, preproc, df, X_items, SENT_MODEL, W=W_proxy)
+    Xva, yva, gva = build_listwise(forms_va,       preproc, df, X_items, SENT_MODEL, W=W_proxy)
+
+    for lr in grid_lr:
+        for nl in grid_leaves:
+            for mcs in grid_min_child:
+                for reg in grid_l2:
+                    for ss in grid_subsample:
+                        for cs in grid_colsample:
+                            mdl = lgb.LGBMRanker(
+                                objective="lambdarank",
+                                n_estimators=int(n_estimators),
+                                learning_rate=float(lr),
+                                num_leaves=int(nl),
+                                min_child_samples=int(mcs),
+                                reg_lambda=float(reg),
+                                subsample=float(ss),
+                                colsample_bytree=float(cs),
+                                random_state=42,
+                                min_split_gain=0.0, 
+                                label_gain=[0, 1, 3, 7], 
+                            )
+                            mdl.fit(
+                                Xtr, ytr,
+                                group=gtr,
+                                eval_set=[(Xva, yva)],
+                                eval_group=[gva],
+                                eval_at=[5],
+                            )
+                            # éval via notre pipeline (reconstruit Xq et utilise mdl.predict)
+                            sc = _eval_ndcg5(forms_va, preproc, df, X_items, "LGBMRanker", mdl, n_boot=n_boot_eval)
+                            print(f"[GS LGBM] lr={lr} leaves={nl} min_child={mcs} "
+                                    f"l2={reg} subsample={ss} colsample={cs} -> NDCG@5={sc:.4f}")
+                            if sc > best["score"]:
+                                best = {
+                                    "score": sc,
+                                    "learning_rate": lr,
+                                    "num_leaves": nl,
+                                    "min_child_samples": mcs,
+                                    "reg_lambda": reg,
+                                    "subsample": ss,
+                                    "colsample_bytree": cs,
+                                    "n_estimators": n_estimators,
+                                    "model": mdl
+                                }
+
+    print(f"[GS LGBM] BEST -> {best}")
+    return best
     
 # =========================================================
 #                         MAIN
@@ -967,9 +1319,10 @@ def grid_search_pair_lr(forms_tr_inner, forms_va, preproc, df, X_items,
 def main_param():
     df = load_and_prepare_catalog()
     assert not df.empty, "Catalogue vide."
+    print(df.columns)
     preproc = build_preproc_for_items(df)
 
-    forms_csv = os.getenv("FORMS_CSV", "forms_restaurants_dept37_single_cp.csv")
+    forms_csv = os.getenv("FORMS_CSV", "API/entrainement/forms_restaurants_dept37_single_cp.csv")
     if not Path(forms_csv).exists():
         return "Erreur, csv non trouvé"
     def forms_from_csv(path_csv: str, df_catalog: pd.DataFrame):
@@ -1017,7 +1370,7 @@ def main_param():
                             f['description'] = s
                 out.append(f)
             return out
-    forms = forms_from_csv(forms_csv, df)  # réutilise ta fonction
+    forms = forms_from_csv(forms_csv, df)
 
     X_items = preproc.fit_transform(df)
     X_items = X_items.toarray().astype(np.float32) if hasattr(X_items, "toarray") else np.asarray(X_items, dtype=np.float32)
@@ -1025,82 +1378,102 @@ def main_param():
     forms_tr, forms_te = train_test_split(list(forms), test_size=0.25, random_state=123)
     forms_tr_inner, forms_va = train_test_split(list(forms_tr), test_size=0.30, random_state=456)
 
-    # ---------- Tuning (inclut texte) ----------
+    # ---------- Tuning pointwise (texte inclus via temp_text_params) ----------
     best_svc = grid_search_linear_svc(forms_tr_inner, forms_va, preproc, df, X_items,
                                       n_boot_eval=30, verbose=True)
-    tau_best = best_svc["tau"]
-    text_w_rev_best = best_svc["w_rev"]
-    text_k_best = best_svc["k"]
+    tau_best = 0.6
+    text_w_rev_best = 0.5
+    text_k_best = 3
 
-    # RF / HGB avec même tau + mêmes params texte (cohérence)
-    with temp_text_params(w_rev=text_w_rev_best, k=text_k_best):
-        best_rf = grid_search_rf(forms_tr_inner, forms_va, preproc, df, X_items,
-                                 tau_val=tau_best, n_boot_eval=25, verbose=True)
-        best_hgb = grid_search_hgb(forms_tr_inner, forms_va, preproc, df, X_items,
-                                   tau_val=tau_best, n_boot_eval=25, verbose=True)
-        best_pair_svm = grid_search_pair_svm(forms_tr_inner, forms_va, preproc, df, X_items,
-                                             n_boot_eval=20, verbose=True)
-        best_pair_lr  = grid_search_pair_lr(forms_tr_inner, forms_va, preproc, df, X_items,
+
+    best_lgbm = grid_search_lgbm_ranker(forms_tr_inner, forms_va, preproc, df, X_items,
+                                        n_boot_eval=20) if lgb is not None else None
+    best_rf = grid_search_rf(forms_tr_inner, forms_va, preproc, df, X_items,
+                                tau_val=tau_best, n_boot_eval=25, verbose=True)
+    best_hgb = grid_search_hgb(forms_tr_inner, forms_va, preproc, df, X_items,
+                                tau_val=tau_best, n_boot_eval=25, verbose=True)
+    best_pair_svm = grid_search_pair_svm(forms_tr_inner, forms_va, preproc, df, X_items,
                                             n_boot_eval=20, verbose=True)
+    best_pair_lr  = grid_search_pair_lr(forms_tr_inner, forms_va, preproc, df, X_items,
+                                        n_boot_eval=20, verbose=True)
 
-    print("\n===== RÉ-ENTRAÎNEMENT FINAL (params optimaux) =====")
-    # ---------- Entraînement final sur train complet ----------
-    with temp_text_params(w_rev=text_w_rev_best, k=text_k_best):
-        Xtr, ytr, swtr, _ = build_pointwise(forms_tr, preproc, df, X_items, SENT_MODEL, tau=tau_best)
-        Xte, yte, swte, qte = build_pointwise(forms_te, preproc, df, X_items, SENT_MODEL, tau=tau_best)
 
-        Xp, yp, wp = build_pairwise(forms_tr, preproc, df, X_items, SENT_MODEL, W=W_eval, top_m=10, bot_m=10)
-        Xp2 = np.vstack([Xp, -Xp])
-        yp2 = np.concatenate([np.ones(len(Xp)), np.zeros(len(Xp))])
-        wp2 = np.concatenate([wp, wp])
+    # pointwise & pairwise existants...
+    Xtr, ytr, swtr, _ = build_pointwise(forms_tr, preproc, df, X_items, SENT_MODEL, tau=tau_best)
+    Xte, yte, swte, qte = build_pointwise(forms_te, preproc, df, X_items, SENT_MODEL, tau=tau_best)
 
-        mdl_svm = LinearSVC(random_state=42, C=float(best_svc["C"]),
-                            loss=best_svc["loss"], class_weight=best_svc["class_weight"])
-        mdl_svm.fit(Xtr, ytr)
+    Xp, yp, wp = build_pairwise(forms_tr, preproc, df, X_items, SENT_MODEL, W=W_proxy, top_m=10, bot_m=10)
+    Xp2 = np.vstack([Xp, -Xp]); yp2 = np.concatenate([np.ones(len(Xp)), np.zeros(len(Xp))]); wp2 = np.concatenate([wp, wp])
 
-        mdl_rf = RandomForestClassifier(
-            n_estimators=int(best_rf["n_estimators"]), max_depth=best_rf["max_depth"],
-            min_samples_leaf=int(best_rf["min_samples_leaf"]), min_samples_split=int(best_rf["min_samples_split"]),
-            max_features=best_rf["max_features"], class_weight=best_rf["class_weight"],
-            random_state=42, n_jobs=-1
+    mdl_svm = LinearSVC(random_state=42, C=float(best_svc["C"]),
+                        loss=best_svc["loss"], class_weight=best_svc["class_weight"])
+    mdl_svm.fit(Xtr, ytr)
+
+    mdl_rf = RandomForestClassifier(
+        n_estimators=int(best_rf["n_estimators"]), max_depth=best_rf["max_depth"],
+        min_samples_leaf=int(best_rf["min_samples_leaf"]), min_samples_split=int(best_rf["min_samples_split"]),
+        max_features=best_rf["max_features"], class_weight=best_rf["class_weight"],
+        random_state=42, n_jobs=-1
+    )
+    mdl_rf.fit(Xtr, ytr, sample_weight=swtr)
+
+    mdl_hgb = HistGradientBoostingClassifier(
+        learning_rate=float(best_hgb["learning_rate"]), max_leaf_nodes=int(best_hgb["max_leaf_nodes"]),
+        min_samples_leaf=int(best_hgb["min_samples_leaf"]), l2_regularization=float(best_hgb["l2_regularization"]),
+        max_bins=int(best_hgb["max_bins"]), early_stopping=True, validation_fraction=0.15, random_state=42
+    )
+    mdl_hgb.fit(Xtr, ytr, sample_weight=swtr)
+
+    pair_svm = make_pipeline(StandardScaler(),
+                                LinearSVC(C=float(best_pair_svm["C"]), loss=best_pair_svm["loss"], random_state=42))
+    pair_svm.fit(Xp2, yp2, linearsvc__sample_weight=wp2)
+
+    pair_lr = make_pipeline(
+        StandardScaler(),
+        LogisticRegression(penalty="l2", solver="liblinear", max_iter=500, random_state=42,
+                            C=float(best_pair_lr["C"]), class_weight=best_pair_lr["class_weight"])
+    )
+    pair_lr.fit(Xp2, yp2, logisticregression__sample_weight=wp2)
+
+    # (NEW) ré-entraînement final listwise si dispo
+    if lgb is not None and best_lgbm is not None:
+        Xlw_tr, ylw_tr, glw_tr = build_listwise(forms_tr, preproc, df, X_items, SENT_MODEL, W=W_proxy)
+        mdl_lgbm = lgb.LGBMRanker(
+            objective="lambdarank",
+            n_estimators=int(best_lgbm["n_estimators"]),
+            learning_rate=float(best_lgbm["learning_rate"]),
+            num_leaves=int(best_lgbm["num_leaves"]),
+            min_child_samples=int(best_lgbm["min_child_samples"]),
+            reg_lambda=float(best_lgbm["reg_lambda"]),
+            subsample=float(best_lgbm["subsample"]),
+            colsample_bytree=float(best_lgbm["colsample_bytree"]),
+            random_state=42,
+            label_gain=[0, 1, 3, 7]
         )
-        mdl_rf.fit(Xtr, ytr, sample_weight=swtr)
+        mdl_lgbm.fit(Xlw_tr, ylw_tr, group=glw_tr)
+    else:
+        mdl_lgbm = None
 
-        mdl_hgb = HistGradientBoostingClassifier(
-            learning_rate=float(best_hgb["learning_rate"]), max_leaf_nodes=int(best_hgb["max_leaf_nodes"]),
-            min_samples_leaf=int(best_hgb["min_samples_leaf"]), l2_regularization=float(best_hgb["l2_regularization"]),
-            max_bins=int(best_hgb["max_bins"]), early_stopping=True, validation_fraction=0.15, random_state=42
-        )
-        mdl_hgb.fit(Xtr, ytr, sample_weight=swtr)
+    # Évaluation finale (ajoute LGBMRanker si présent)
+    models = {
+        "LinearSVC": mdl_svm,
+        "RandomForest": mdl_rf,
+        "HistGB": mdl_hgb,
+        "PairSVM": pair_svm,
+        "PairLogReg": pair_lr,
+    }
+    if mdl_lgbm is not None:
+        models["LGBMRanker"] = mdl_lgbm
 
-        pair_svm = make_pipeline(StandardScaler(),
-                                 LinearSVC(C=float(best_pair_svm["C"]), loss=best_pair_svm["loss"], random_state=42))
-        pair_svm.fit(Xp2, yp2, linearsvc__sample_weight=wp2)
-
-        pair_lr = make_pipeline(
-            StandardScaler(),
-            LogisticRegression(penalty="l2", solver="liblinear", max_iter=500, random_state=42,
-                               C=float(best_pair_lr["C"]), class_weight=best_pair_lr["class_weight"])
-        )
-        pair_lr.fit(Xp2, yp2, logisticregression__sample_weight=wp2)
-
-        # Évaluation finale
-        models = {
-            "LinearSVC": mdl_svm,
-            "RandomForest": mdl_rf,
-            "HistGB": mdl_hgb,
-            "PairSVM": pair_svm,
-            "PairLogReg": pair_lr,
-        }
-        summary, per_query = eval_benchmark(
-            forms_te, preproc, df, X_items, SENT_MODEL, models,
-            k=5, tau_q=0.85, use_top_m=None, jitter=1e-6, n_boot=300
-        )
+    summary, per_query = eval_benchmark(
+        forms_te, preproc, df, X_items, SENT_MODEL, models,
+        k=5, tau_q=0.85, use_top_m=10, jitter=1e-6, n_boot=300
+    )
 
     # ---------- Sauvegardes ----------
-    Path("artifacts").mkdir(exist_ok=True, parents=True)
-    summary.to_csv("artifacts/benchmark_summary_param.csv", index=True)
-    per_query.to_csv("artifacts/benchmark_per_query_param.csv", index=False)
+    outdir = _artifacts_dir() 
+    summary.to_csv(outdir / "benchmark_summary_param_6.csv", index=True)
+    per_query.to_csv(outdir / "benchmark_per_query_param_6.csv", index=False)
 
     Path("API/artifacts").mkdir(exist_ok=True, parents=True)
 
@@ -1117,8 +1490,19 @@ def main_param():
         "PairSVM": _jsonify_best(best_pair_svm),
         "PairLogReg": _jsonify_best(best_pair_lr),
     }
+    # (NEW) paramètres LGBM
+    if lgb is not None and best_lgbm is not None:
+        to_dump["LGBMRanker"] = {
+            "learning_rate": float(best_lgbm["learning_rate"]),
+            "num_leaves": int(best_lgbm["num_leaves"]),
+            "min_child_samples": int(best_lgbm["min_child_samples"]),
+            "reg_lambda": float(best_lgbm["reg_lambda"]),
+            "subsample": float(best_lgbm["subsample"]),
+            "colsample_bytree": float(best_lgbm["colsample_bytree"]),
+            "n_estimators": int(best_lgbm["n_estimators"])
+        }
 
-    with open("artifacts/best_params.json", "w", encoding="utf-8") as f:
+    with open("artifacts/best_params_6.json", "w", encoding="utf-8") as f:
         json.dump(to_dump, f, ensure_ascii=False, indent=2)
 
     print("\nFichiers générés dans ./artifacts :")
@@ -1131,12 +1515,12 @@ def main_entrainement():
     # 1) Charger et préparer le catalogue depuis les tables
     df = load_and_prepare_catalog()
     assert not df.empty, "Catalogue vide."
-
     # 2) Préproc des items (features "classiques" pour Zf & X_items)
     preproc = build_preproc_for_items(df)
+    
 
     # 3) Jeu de formulaires
-    forms_csv = os.getenv("FORMS_CSV", "forms_restaurants_dept37_single_cp.csv")
+    forms_csv = os.getenv("FORMS_CSV", "API/entrainement/forms_restaurants_dept37_single_cp.csv")
     if not Path(forms_csv).exists():
         # fallback : petit set par défaut
         return "Erreur, csv non trouvé"
@@ -1199,39 +1583,28 @@ def main_entrainement():
     # 5) Datasets pointwise & pairwise
     Xtr, ytr, swtr, _ = build_pointwise(forms_tr, preproc, df, X_items, SENT_MODEL)
     Xte, yte, swte, qte = build_pointwise(forms_te, preproc, df, X_items, SENT_MODEL)
-    Xp, yp, wp = build_pairwise(forms_tr, preproc, df, X_items, SENT_MODEL, W=W_eval, top_m=10, bot_m=10)
+    Xp, yp, wp = build_pairwise(forms_tr, preproc, df, X_items, SENT_MODEL, W=W_proxy, top_m=10, bot_m=10)
     # symétrisation
     Xp2 = np.vstack([Xp, -Xp])
     yp2 = np.concatenate([np.ones(len(Xp)), np.zeros(len(Xp))])
     wp2 = np.concatenate([wp, wp])
 
     # 6) Modèles
-    pair_svm = make_pipeline(StandardScaler(), LinearSVC(C=1.0, random_state=42))
-    pair_svm.fit(Xp2, yp2, linearsvc__sample_weight=wp2)
 
-    pair_lr = make_pipeline(StandardScaler(),
-                            LogisticRegression(penalty="l2", solver="liblinear", max_iter=500, random_state=42))
-    pair_lr.fit(Xp2, yp2, logisticregression__sample_weight=wp2)
-
-    mdl_lr  = LogisticRegression(max_iter=2000)
-    mdl_rf  = RandomForestClassifier(n_estimators=400, random_state=42, n_jobs=-1)
     mdl_hgb = HistGradientBoostingClassifier(random_state=42,learning_rate= 0.1,max_leaf_nodes= 31
                                              ,min_samples_leaf=20,l2_regularization=0.001,max_bins=255)
     mdl_svm = LinearSVC(random_state=42)
 
-    mdl_lr.fit(Xtr, ytr, sample_weight=swtr)
-    mdl_rf.fit(Xtr, ytr, sample_weight=swtr)
     mdl_hgb.fit(Xtr, ytr, sample_weight=swtr)
     mdl_svm.fit(Xtr, ytr)  # pas de sample_weight
 
     # 7) Évaluation ranking
     models = {
     "LinearSVC": mdl_svm,
-    "HistGrad":mdl_hgb
-}
+    "HistGrad":mdl_hgb}
 
     summary, per_query = eval_benchmark(forms_te, preproc, df, X_items, SENT_MODEL, models,
-                                        k=5, tau_q=0.85, use_top_m=None, jitter=1e-6, n_boot=300)
+                                        k=5, tau_q=0.85, use_top_m=10, jitter=1e-6, n_boot=300)
     print("\n=== Résumé (moyennes + IC95) ===")
     print(summary)
 
@@ -1239,14 +1612,23 @@ def main_entrainement():
     summary.to_csv(outdir / "benchmark_summary.csv", index=True)
     per_query.to_csv(outdir / "benchmark_per_query.csv", index=False)
 
-    outdir = _artifacts_dir()
-    outdir.mkdir(parents=True, exist_ok=True)
+    preproc_path = outdir / "preproc_items.joblib"
+    model_path   = outdir / "rank_model.joblib"
 
-    rank_model = mdl_hgb   
+    print(f"[save] preproc -> {preproc_path.resolve()}")
+    joblib.dump(preproc, preproc_path, compress=("xz", 3))
 
-    joblib.dump(preproc, outdir / "preproc_items.joblib", compress=("xz", 3))
+    rank_model = mdl_hgb  
 
-    joblib.dump(rank_model, outdir / "rank_model.joblib", compress=("xz", 3))
+    print(f"[save] rank model ({type(rank_model)}) -> {model_path.resolve()}")
+    try:
+        joblib.dump(rank_model, model_path, compress=("xz", 3))
+        print("[save] OK rank_model.joblib")
+    except Exception as e:
+        import traceback
+        print("[save][ERROR] Impossible d'écrire rank_model.joblib :", e)
+        traceback.print_exc()
+    
     print("\nFichiers générés dans", outdir.resolve())
     print("\nFichiers générés")
 

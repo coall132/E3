@@ -1,0 +1,48 @@
+{
+  "tau_best": 0.6,
+  "text": {
+    "w_rev": 0.5,
+    "k": 3
+  },
+  "LinearSVC": {
+    "C": 2.0,
+    "loss": "hinge",
+    "class_weight": "balanced"
+  },
+  "RF": {
+    "score": 0.9562900241996266,
+    "n_estimators": 600,
+    "max_depth": 15,
+    "min_samples_leaf": 1,
+    "min_samples_split": 5,
+    "max_features": "sqrt",
+    "class_weight": "balanced_subsample"
+  },
+  "HistGB": {
+    "score": 0.9538499687146325,
+    "learning_rate": 0.1,
+    "max_leaf_nodes": 63,
+    "min_samples_leaf": 20,
+    "l2_regularization": 0.01,
+    "max_bins": 255
+  },
+  "PairSVM": {
+    "score": 0.9399931547431949,
+    "C": 0.25,
+    "loss": "squared_hinge"
+  },
+  "PairLogReg": {
+    "score": 0.9446481351099592,
+    "C": 0.25,
+    "class_weight": null
+  },
+  "LGBMRanker": {
+    "learning_rate": 0.03,
+    "num_leaves": 127,
+    "min_child_samples": 20,
+    "reg_lambda": 0.01,
+    "subsample": 1.0,
+    "colsample_bytree": 1.0,
+    "n_estimators": 300
+  }
+}

@@ -39,6 +39,9 @@ jobs:
           DISABLE_WARMUP: "1"
           API_STATIC_KEY: "coall"
           PYTHONPATH: ${{ github.workspace }} 
+          E2E_API_BASE: http://127.0.0.1:8000
+          E2E_CLIENT_BASE: http://127.0.0.1:8501
+          E2E_STARTUP_TIMEOUT: "120"
         run: pytest -q
 
       # Build & Push vers Docker Hub (change l’org & ajoute secrets)

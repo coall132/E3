@@ -19,7 +19,7 @@ import math
 
 try:
     from . import models
-    from . import database
+    from . import database as db
     from . import schema
     from . import benchmark_2_0 as bm
     from . import utils

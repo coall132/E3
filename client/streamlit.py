@@ -9,6 +9,20 @@ DEFAULT_API_BASE = os.getenv("API_BASE_URL")
 
 st.set_page_config(page_title="Reco Restaurants — Client API", layout="wide")
 st.title("Reco Restaurants — Client Streamlit (API externe)")
+DEFAULT_HTTP_TIMEOUT = int(os.getenv("API_HTTP_TIMEOUT", "360"))
+
+def _api_post(url: str, *, json_body=None, headers=None, params=None, timeout: int=DEFAULT_HTTP_TIMEOUT):
+    r = requests.post(url, json=json_body, headers=headers, params=params, timeout=(5, timeout))
+    try:
+        r.raise_for_status()
+    except requests.HTTPError as e:
+        try:
+            payload = r.json()
+        except Exception:
+            payload = {"detail": r.text}
+        msg = payload.get("detail") or payload
+        raise RuntimeError(f"HTTP {r.status_code} — {msg}") from e
+    return r.json()
 
 def _now_ts():
     return int(time.time())
@@ -51,6 +65,8 @@ def init_base_url():
         st.session_state["base_url"] = _normalize_base(DEFAULT_API_BASE)
 
 with st.sidebar:
+    http_timeout = st.number_input("Timeout HTTP (s)", min_value=10, max_value=600, value=120, step=5)
+    st.session_state["http_timeout"] = int(http_timeout)
     st.header("Connexion API")
     base_url = st.text_input("Base URL de l'API", value=DEFAULT_API_BASE)
     st.session_state["base_url"] = _normalize_base(base_url)
@@ -99,6 +115,12 @@ with st.sidebar:
     else:
         st.warning("Pas de token valide. Récupérez-en un.")
 
+    if st.button("Se déconnecter (supprimer le token)", use_container_width=True, disabled=not st.session_state.get("access_token")):
+        st.session_state.pop("access_token", None)
+        st.session_state.pop("token_expires_at", None)
+        st.success("Token supprimé. Vous êtes déconnecté.")
+        st.rerun()
+
 
 st.subheader("Requête")
 disabled_predict = not _token_is_valid()
@@ -130,7 +152,9 @@ if submitted:
     try:
         url = f"{st.session_state['base_url']}/predict"
         params = {"k": k, "use_ml": str(use_ml).lower()}
-        resp = _api_post(url, json_body=form, headers=_bearer_headers(), params=params)
+        to = st.session_state.get("http_timeout", DEFAULT_HTTP_TIMEOUT)
+        with st.spinner(f"Appel /predict… (timeout {to}s)"):
+            resp = _api_post(url, json_body=form, headers=_bearer_headers(), params=params, timeout=to)
         st.session_state["last_prediction"] = resp
         st.success("Prédiction OK")
 
@@ -180,11 +204,12 @@ if st.button("Envoyer /feedback", disabled=disabled_fb):
     try:
         url = f"{st.session_state['base_url']}/feedback"
         payload = {"prediction_id": str(pred_id), "rating": int(rating), "comment": comment or None}
-        resp = _api_post(url, json_body=payload, headers=_bearer_headers())
+        to = st.session_state.get("http_timeout", DEFAULT_HTTP_TIMEOUT)
+        with st.spinner(f"Appel /feedback… (timeout {to}s)"):
+            resp = _api_post(url, json_body=payload, headers=_bearer_headers(), timeout=to)
         st.success("Feedback envoyé")
         with st.expander("Réponse brute"):
             st.json(resp)
     except Exception as e:
         st.error(f"Erreur /feedback : {e}")
 
-st.caption("Ce client n'effectue **aucun calcul local** : il consomme uniquement vos endpoints FastAPI (auth/token/predict/feedback).")

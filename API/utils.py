@@ -152,3 +152,19 @@ def _infer_embed_dim(df: pd.DataFrame, default: int = 1024) -> int:
         for v in df["desc_embed"]:
             if isinstance(v, np.ndarray) and v.ndim == 1:
                 return int(v.shape[0])
+
+def to_int_safe(X):
+    if isinstance(X, pd.DataFrame):
+        return X.fillna(0).astype(np.int32)
+    return np.nan_to_num(X, nan=0.0).astype(np.int32)
+
+{
+  "price_level": np.Nan,
+  "code_postal": "37241",
+  "open": "ouvert_dimanche_matin",
+  "options": [],
+  "description": "Restaurant libanais/levantin avec mezzés variés, options "
+  "végétariennes et vegan, pain chaud servi en continu. Je privilégie une ambiance"
+  " familiale, musique douce, et un service le soir jusqu’à 22h30. "
+  "J’apprécie les terrasses couvertes quand il pleut."
+}

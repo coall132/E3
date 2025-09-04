@@ -56,6 +56,7 @@ services:
       POSTGRES_PORT: 5432
       # --- artifacts (MinIO/S3)
       MLFLOW_S3_ENDPOINT_URL: http://minio:9001
+      AWS_S3_FORCE_PATH_STYLE: "true" 
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
       # --- mlflow server config via ENV (utilisées par mlflow.server:app)

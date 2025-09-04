@@ -23,6 +23,40 @@ def sanitize_df_columns(df: pd.DataFrame) -> pd.DataFrame:
     df.rename(columns=lambda c: re.sub(r'^"+|"+$', '', c), inplace=True)
     return df
 
+def compute_opening_profile(df_etab: pd.DataFrame, df_horaires: pd.DataFrame) -> pd.DataFrame:
+    jours = {0: "dimanche", 1: "lundi", 2: "mardi", 3: "mercredi", 4: "jeudi", 5: "vendredi", 6: "samedi"}
+    creneaux = {"matin": (8, 11), "midi": (11, 14), "apres_midi": (14, 19), "soir": (19, 23)}
+
+    hf = df_horaires.copy()
+    # drop lignes incomplètes
+    hf.dropna(subset=['close_hour', 'close_day'], inplace=True)
+    for col in ['open_day', 'open_hour', 'close_day', 'close_hour']:
+        hf[col] = hf[col].astype(int)
+
+    def calculer_profil_ouverture(etab_row):
+        etab_id = etab_row['id_etab']
+        profil = {'id_etab': etab_id}
+        for j in jours.values():
+            for c in creneaux.keys():
+                profil[f"ouvert_{j}_{c}"] = 0
+
+        horaires_etab = hf[hf['id_etab'] == etab_id]
+        if horaires_etab.empty:
+            return pd.Series(profil)
+
+        for _, periode in horaires_etab.iterrows():
+            if periode['open_day'] != periode['close_day']:
+                continue
+            jour_nom = jours.get(periode['open_day'])
+            if not jour_nom:
+                continue
+            for nom_creneau, (debut, fin) in creneaux.items():
+                if periode['open_hour'] < fin and periode['close_hour'] > debut:
+                    profil[f"ouvert_{jour_nom}_{nom_creneau}"] = 1
+        return pd.Series(profil)
+
+    return df_etab.apply(calculer_profil_ouverture, axis=1)
+
 def determine_price_level_row(row):
     sp = row.get('start_price', np.nan)
     if pd.notna(sp):
@@ -222,10 +256,72 @@ def form_to_row(form, df_catalog):
             row[c] = 0.0
     return pd.DataFrame([row])[df_catalog.columns]
 
-def pair_features(Zf, H, X_items, diff_scale=0.05):
+def text_features01(df, form, sent_model, k=2, missing_cos=0.0):
+    """
+    Aligne l'inférence sur le training:
+      -> retourne (N, 2) dans [0,1]:
+         [:,0] = cos_desc01,  [:,1] = cos_rev_topk01
+    """
+    q = (fget(form, 'description', '') or '').strip()
+    N = len(df)
+    out = np.zeros((N, 2), dtype=np.float32)
+
+    if not q:
+        # neutre si pas de texte
+        out[:] = 1.0
+        return out
+
+    z = sent_model.encode([q], normalize_embeddings=True, show_progress_bar=False)[0].astype(np.float32)
+
+    # cos avec la description
+    cos_d = np.full(N, np.nan, dtype=np.float32)
+    desc_list = df.get('desc_embed', None)
+    if desc_list is not None:
+        for i, v in enumerate(desc_list):
+            if isinstance(v, np.ndarray) and v.ndim == 1 and v.size > 0:
+                cos_d[i] = float(np.dot(v.astype(np.float32), z))
+
+    # cos top-k sur les reviews
+    cos_r = np.full(N, np.nan, dtype=np.float32)
+    rev_list = df.get('rev_embeds', None)
+    if rev_list is not None:
+        for i, lst in enumerate(rev_list):
+            val = topk_mean_cosine(lst, z, k=k)
+            if val is not None:
+                cos_r[i] = float(val)
+
+    # remplit les manquants et passe en [0,1]
+    cos_d = np.where(np.isnan(cos_d), missing_cos, cos_d)
+    cos_r = np.where(np.isnan(cos_r), missing_cos, cos_r)
+    return np.stack([(cos_d + 1.0) / 2.0, (cos_r + 1.0) / 2.0], axis=1)
+
+def pair_features(Zf, X_items, T, diff_scale=0.05):
+    """
+    Construit les features modèle:
+      - Zf: vecteur du formulaire (d,)
+      - X_items: matrice items (N, d) (dense ou sparse)
+      - T: features texte brutes (N, 2) dans [0,1] (cos_desc01, cos_rev01)
+    Retour: (N, d + 2)
+    """
+    Zf = np.asarray(Zf, dtype=np.float32).ravel()
+    if hasattr(X_items, "toarray"):
+        X_items = X_items.toarray()
+    X_items = np.asarray(X_items, dtype=np.float32)
+    if X_items.ndim != 2:
+        raise ValueError(f"X_items doit être 2D, reçu shape={X_items.shape}")
+
+    T = np.asarray(T, dtype=np.float32)
+    if T.ndim == 1:
+        T = T[:, None]
+    if T.shape[0] != X_items.shape[0]:
+        raise ValueError(f"Mauvais N entre X_items (N={X_items.shape[0]}) et T (N={T.shape[0]})")
+
+    d = X_items.shape[1]
+    if Zf.shape[0] != d:
+        raise ValueError(f"Zf dim={Zf.shape[0]} incompatible avec X_items dim={d}")
+
     diff = np.abs(X_items - Zf.reshape(1, -1)) * float(diff_scale)
-    cos  = np.asarray(H['text'], float)[:, None]
-    return np.hstack([diff, cos]).astype(np.float32)
+    return np.hstack([diff, T]).astype(np.float32)
 
 def _toint_safe(X):
     # robustifier le cast (évite ton crash actuel)

@@ -6,24 +6,22 @@ from sqlalchemy.orm import sessionmaker
 from fastapi.testclient import TestClient
 
 os.environ.setdefault("DISABLE_WARMUP", "1")
+API_STATIC_KEY=os.getenv("API_STATIC_KEY")
 
 from API import main
 from API import models
 from API.database import Base
 
 def test_auth_flow_and_predict(client_realdb):
-    # 1) créer une API key
     payload = {"email": "u@test", "username": "user1"}
-    r = client_realdb.post("/auth/api-keys", params={"password": "coall"}, json=payload)
+    r = client_realdb.post("/auth/api-keys", params={"password": API_STATIC_KEY}, json=payload)
     assert r.status_code == 200, r.text
     api_key = r.json()["api_key"]
 
-    # 2) token
     r = client_realdb.post("/auth/token", headers={"X-API-KEY": api_key})
     assert r.status_code == 200, r.text
     token = r.json()["access_token"]
 
-    # 3) predict (⚠️ adapte les valeurs aux données de TA base)
     form = {"price_level": 2, "code_postal": "37000", "open": "ouvert_lundi_midi",
             "options": ["delivery"], "description": "pizza"}
     r = client_realdb.post("/predict?k=3", json=form,
@@ -52,7 +50,7 @@ def test_feedback_good(client):
     })
     main.app.state.DF_CATALOG = df
 
-    r = client.post("/auth/api-keys", params={"password": "coall"},
+    r = client.post("/auth/api-keys", params={"password": API_STATIC_KEY},
                     json={"email": "uA@test", "username": "userA"})
     assert r.status_code == 200, r.text
     api_key_A = r.json()["api_key"]
@@ -69,6 +67,10 @@ def test_feedback_good(client):
 
     prediction_id = body.get("prediction_id") or body.get("id")
     assert prediction_id is not None
+
+    fb_payload = {"prediction_id": prediction_id, "rating": 4, "comment": "Pertinent"}
+    r = client.post("/feedback", json=fb_payload, )
+    assert r.status_code == 401, r.text
 
     fb_payload = {"prediction_id": prediction_id, "rating": 4, "comment": "Pertinent"}
     r = client.post("/feedback", json=fb_payload, headers={"Authorization": f"Bearer {token_A}"})
@@ -96,13 +98,13 @@ def test_feedback_forbidden(client):
     })
     main.app.state.DF_CATALOG = df
 
-    r = client.post("/auth/api-keys", params={"password": "coall"},
+    r = client.post("/auth/api-keys", params={"password": API_STATIC_KEY},
                     json={"email": "uA2@test", "username": "userA2"})
     api_key_A = r.json()["api_key"]
     r = client.post("/auth/token", headers={"X-API-KEY": api_key_A})
     token_A = r.json()["access_token"]
 
-    r = client.post("/auth/api-keys", params={"password": "coall"},
+    r = client.post("/auth/api-keys", params={"password": API_STATIC_KEY},
                     json={"email": "uB@test", "username": "userB"})
     api_key_B = r.json()["api_key"]
     r = client.post("/auth/token", headers={"X-API-KEY": api_key_B})
@@ -118,3 +120,7 @@ def test_feedback_forbidden(client):
     fb_payload = {"prediction_id": prediction_id, "rating": 1, "comment": "Nope"}
     r = client.post("/feedback", json=fb_payload, headers={"Authorization": f"Bearer {token_B}"})
     assert r.status_code == 403
+
+    fb_payload = {"prediction_id": prediction_id, "rating": 1, "comment": "Nope"}
+    r = client.post("/feedback", json=fb_payload, headers={"Authorization": f"Bearer {token_A}"})
+    assert r.status_code == 200

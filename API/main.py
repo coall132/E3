@@ -15,6 +15,8 @@ import mlflow, os, uuid, json, time
 
 MLFLOW_URI = os.getenv("MLFLOW_TRACKING_URI") 
 MLFLOW_EXP = os.getenv("MLFLOW_EXPERIMENT", "reco-inference")
+PROXY_K_INFER = 2          
+DIFF_SCALE = 0.05 
 
 try :
     from . import utils
@@ -29,7 +31,8 @@ try :
         build_item_features_df,
         aggregate_gains,
         W_eval,
-        pick_anchors_from_df,)
+        pick_anchors_from_df,
+        text_features01)
 except :
     from API import utils
     from API import CRUD
@@ -44,7 +47,7 @@ except :
     aggregate_gains = fx.aggregate_gains
     W_eval = fx.W_eval
     pick_anchors_from_df = fx.pick_anchors_from_df
-
+    text_features01 = fx.text_features01 
 
 app = FastAPI(
     title="API Reco Restaurant",
@@ -121,33 +124,31 @@ def warmup():
     df = app.state.DF_CATALOG
 
     # 3) Ancres pour features texte (optionnel)
-    app.state.ANCHORS = fx.pick_anchors_from_df(df, n=8) if not df.empty else None
+    app.state.ANCHORS = pick_anchors_from_df(df, n=8) if not df.empty else None
 
     # 4) Pré-calcul X_ITEMS avec le préproc **fitté** (transform, pas fit_transform)
     app.state.X_ITEMS = None
     if app.state.PREPROC is not None and not df.empty:
         try:
             X_items_sp = app.state.PREPROC.transform(df)
-            app.state.X_ITEMS = (
-                X_items_sp.toarray().astype(np.float32)
-                if hasattr(X_items_sp, "toarray")
-                else np.asarray(X_items_sp, dtype=np.float32)
-            )
-            print(f"[startup] PREPROC ok | X_ITEMS shape={app.state.X_ITEMS.shape}")
+            X_items = X_items_sp.toarray().astype(np.float32) if hasattr(X_items_sp, "toarray") \
+                      else np.asarray(X_items_sp, dtype=np.float32)
+            app.state.X_ITEMS = X_items
+            print(f"[startup] X_ITEMS ready, shape={X_items.shape}")
         except Exception as e:
-            print(f"[startup] Échec création X_ITEMS: {e}")
+            print(f"[startup] Impossible de construire X_ITEMS: {e}")
             app.state.X_ITEMS = None
 
     app.state.FEATURE_COLS = []
 
-    # 5) Sanity-check: largeur des features vs modèle (pair_features ajoute 1 colonne cos texte)
     nfi = getattr(app.state.ML_MODEL, "n_features_in_", None)
     if nfi is not None and app.state.X_ITEMS is not None:
-        expected = int(app.state.X_ITEMS.shape[1]) + 1  # +1 = colonne 'text' de pair_features
+        expected = int(app.state.X_ITEMS.shape[1]) + 2  # +2 = [cos_desc01, cos_rev01]
         if nfi != expected:
-            print(f"[startup][warn] Le modèle attend n_features_in_={nfi} mais pair_features produira {expected}. "
-                  f"Vérifie que rank_model.joblib et preproc_items.joblib proviennent du même train/catalogue.")
-
+            print(
+                f"[startup][warn] Le modèle attend n_features_in_={nfi} mais pair_features produira {expected}. "
+                f"Vérifie que rank_model.joblib et preproc_items.joblib proviennent du même train/catalogue."
+            )
     anch_shape = None if app.state.ANCHORS is None else getattr(app.state.ANCHORS, "shape", None)
     print(f"[startup] OK | rows={len(df)} | X_ITEMS={(None if app.state.X_ITEMS is None else app.state.X_ITEMS.shape)} "
           f"| anchors={anch_shape}")
@@ -196,42 +197,63 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
     df = app.state.DF_CATALOG
 
     try:
-        form_row = models.FormDB(price_level=form.price_level,city=form.city,open=form.open,options=form.options,description=form.description)
+        form_row = models.FormDB(
+            price_level=form.price_level,
+            city=form.city,      
+            open=form.open,
+            options=form.options,
+            description=form.description,
+        )
         db.add(form_row)
-        db.flush()  
+        db.flush()
         form_id = form_row.id
     except Exception as e:
         db.rollback()
         raise HTTPException(500, f"Insertion du formulaire impossible: {e}")
 
     anchors = getattr(app.state, "ANCHORS", None)
-    X_df, gains_proxy = build_item_features_df(df=df,form=form.model_dump(),sent_model=app.state.SENT_MODEL,include_query_consts=True,anchors=anchors)
+    X_df, gains_proxy = build_item_features_df(df=df,form=form.model_dump(),sent_model=app.state.SENT_MODEL,include_query_consts=True,anchors=anchors,)
 
     used_ml = False
-    scores = gains_proxy.copy()
+    scores = np.asarray(gains_proxy, dtype=np.float32)
+    model  = getattr(app.state, "ML_MODEL", None)
+    preproc = getattr(app.state, "PREPROC", None)
+    X_items = getattr(app.state, "X_ITEMS", None)
 
-    
-    if use_ml and getattr(app.state, "ML_MODEL", None) is not None \
-            and getattr(app.state, "PREPROC", None) is not None \
-            and getattr(app.state, "X_ITEMS", None) is not None:
+    if use_ml and (model is not None) and (preproc is not None) and (X_items is not None):
+        try:
+            # Zf = encodage du formulaire avec le même PREPROC que training
+            Zf_sp = preproc.transform(form_to_row(form.model_dump(), df))
+            Zf = Zf_sp.toarray()[0] if hasattr(Zf_sp, "toarray") else np.asarray(Zf_sp)[0]
 
-        Zf_sp = app.state.PREPROC.transform(form_to_row(form.model_dump(), app.state.DF_CATALOG))
-        Zf = Zf_sp.toarray()[0] if hasattr(Zf_sp, "toarray") else np.asarray(Zf_sp)[0]
+            # features texte brutes (N,2) en [0,1], avec k=2 comme au training
+            T_feat = text_features01(df, form.model_dump(), app.state.SENT_MODEL, k=PROXY_K_INFER)
 
-        H = score_func(app.state.DF_CATALOG, form.model_dump(), app.state.SENT_MODEL)
-        Xq = pair_features(Zf, H, app.state.X_ITEMS) 
+            # concat diff + T (shape = N, d+2) exactement comme au training
+            Xq = pair_features(Zf, X_items, T_feat, diff_scale=DIFF_SCALE)
 
-        scores = utils._predict_scores(app.state.ML_MODEL, Xq) 
-        used_ml = True
+            # prédiction (supporte predict / decision_function / predict_proba)
+            scores = utils._predict_scores(model, Xq)
+            used_ml = True
 
-    k = int(max(1, min(k, 50)))
+        except Exception as e:
+            print(f"[predict] chemin ML en échec, fallback proxy: {e}")
+            used_ml = False
+
+    k = int(max(1, min(k or 10, 50)))
     order = np.argsort(scores)[::-1]
     sel = order[:k]
 
     latency_ms = int((time.perf_counter() - t0) * 1000)
     model_version = os.getenv("MODEL_VERSION") or getattr(app.state, "MODEL_VERSION", None) or "dev"
 
-    pred_row = models.Prediction(form_id=form_id,k=k,model_version=model_version,latency_ms=latency_ms,status="ok")
+    pred_row = models.Prediction(
+        form_id=form_id,
+        k=k,
+        model_version=model_version,
+        latency_ms=latency_ms,
+        status="ok"
+    )
     if hasattr(models.Prediction, "user_id"):
         setattr(pred_row, "user_id", user_id)
 
@@ -239,7 +261,12 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
     for r, i in enumerate(sel, start=1):
         etab_id = int(df.iloc[i]["id_etab"]) if "id_etab" in df.columns else int(i)
         pred_row.items.append(
-            models.PredictionItem(rank=r,etab_id=etab_id,score=float(scores[i]),))
+            models.PredictionItem(
+                rank=r,
+                etab_id=etab_id,
+                score=float(scores[i]),
+            )
+        )
 
     try:
         db.add(pred_row)
@@ -251,8 +278,14 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
 
     try:
         pyd_pred = schema.Prediction.model_validate(pred_row)
-        CRUD.log_prediction_event(prediction=pyd_pred,form_dict=form.model_dump(),scores=np.asarray(scores, dtype=float),
-            used_ml=used_ml,latency_ms=latency_ms,model_version=model_version,)
+        CRUD.log_prediction_event(
+            prediction=pyd_pred,
+            form_dict=form.model_dump(),
+            scores=np.asarray(scores, dtype=float),
+            used_ml=used_ml,
+            latency_ms=latency_ms,
+            model_version=model_version,
+        )
     except Exception as e:
         print(f"[mlflow] log_prediction_event failed: {e}")
 
@@ -272,6 +305,7 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
     base["items_rich"] = items_rich
     base["message"] = "N’hésitez pas à donner un feedback (0 à 5) via /feedback en utilisant prediction_id."
     return base
+
 
 
 @app.post("/feedback", response_model=schema.FeedbackOut, tags=["monitoring"])
