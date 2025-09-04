@@ -53,9 +53,9 @@ def _ensure_minimal_app_state_for_api(app):
             "delivery": [True, False, True],
             "servesVegetarianFood": [True, True, False],
             # embeddings 3D alignés sur l’encoder dummy
-            "desc_embed": [_np.array([1,0,0], dtype=_np.float32),
-                           _np.array([0,1,0], dtype=_np.float32),
-                           _np.array([0,0,1], dtype=_np.float32)],
+            "desc_embed": [np.array([1,0,0], dtype=np.float32),
+                           np.array([0,1,0], dtype=np.float32),
+                           np.array([0,0,1], dtype=np.float32)],
             "rev_embeds": [None, None, None],
             # une colonne "open" utilisée par les tests
             "ouvert_lundi_midi": [1, 0, 1],
