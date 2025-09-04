@@ -16,6 +16,51 @@ from sqlalchemy.orm import sessionmaker
 from fastapi.testclient import TestClient
 from testcontainers.postgres import PostgresContainer
 
+import numpy as np
+import pandas as pd
+
+def _ensure_minimal_app_state_for_api(app):
+    class _FakeEncoder:
+        def encode(self, texts, normalize_embeddings=True, show_progress_bar=False):
+            if isinstance(texts, str):
+                texts = [texts]
+            out = []
+            for t in texts:
+                L = len(str(t))
+                vec = np.array([L % 3 == 0, L % 3 == 1, L % 3 == 2], dtype=float)
+                if vec.sum() == 0:
+                    vec = np.array([1,0,0], dtype=float)
+                if normalize_embeddings:
+                    n = np.linalg.norm(vec)
+                    if n > 0:
+                        vec = vec / n
+                out.append(vec.astype(np.float32))
+            return np.vstack(out)
+
+    if not hasattr(app.state, "SENT_MODEL"):
+        app.state.SENT_MODEL = _FakeEncoder()
+
+    if not hasattr(app.state, "DF_CATALOG"):
+        df = pd.DataFrame({
+            "id_etab": [1, 2, 3],
+            "rating": [4.0, 3.5, 4.5],
+            "priceLevel": [1, 2, 3],
+            "latitude": [47.39, 47.39, 47.39],
+            "longitude": [0.68, 0.68, 0.68],
+            "editorialSummary_text": ["a", "b", "c"],
+            "start_price": [10, 12, 30],
+            "code_postal": ["37000", "37100", "37200"],
+            "delivery": [True, False, True],
+            "servesVegetarianFood": [True, True, False],
+            # embeddings 3D alignés sur l’encoder dummy
+            "desc_embed": [_np.array([1,0,0], dtype=_np.float32),
+                           _np.array([0,1,0], dtype=_np.float32),
+                           _np.array([0,0,1], dtype=_np.float32)],
+            "rev_embeds": [None, None, None],
+            # une colonne "open" utilisée par les tests
+            "ouvert_lundi_midi": [1, 0, 1],
+        })
+        app.state.DF_CATALOG = df
 
 def _engine_url_from_pg(pg: PostgresContainer) -> str:
     """
@@ -60,6 +105,7 @@ models.Base.metadata.create_all(database.engine)
 
 main = importlib.import_module("API.main")
 _APP = main.app
+_ensure_minimal_app_state_for_api(_APP)
 
 
 def pytest_sessionfinish(session, exitstatus):

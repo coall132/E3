@@ -44,25 +44,7 @@ def fake_catalog():
     ])
     return {"etab": df_etab,"options": df_options,"etab_embedding": df_embed,"opening_period": df_open}
 
-def fake_sentence_encoder(monkeypatch):
-    class _FakeEncoder:
-        def encode(self, texts, normalize_embeddings=True, show_progress_bar=False):
-            if isinstance(texts, str):
-                texts = [texts]
-            out = []
-            for t in texts:
-                L = len(str(t))
-                vec = np.array([L % 3 == 0, L % 3 == 1, L % 3 == 2], dtype=float)
-                if vec.sum() == 0:
-                    vec = np.array([1,0,0], dtype=float)
-                if normalize_embeddings:
-                    n = np.linalg.norm(vec)
-                    if n > 0:
-                        vec = vec / n
-                out.append(vec.astype(np.float32))
-            return np.vstack(out)
-    # on remplace le modèle global utilisé par benchmark_3
-    monkeypatch.setattr(e3, "SENT_MODEL", _FakeEncoder(), raising=True)
+
 
 def _infer_scores_for_form(df, form, preproc, X_items, model):
     # 1) Embedding du formulaire
@@ -85,7 +67,6 @@ def _infer_scores_for_form(df, form, preproc, X_items, model):
 def test_inference_end_to_end(tmp_path, monkeypatch):
     # >>> patch correct de la source de données
     monkeypatch.setattr(e3.API.entrainement.Extract, "main", lambda: fake_catalog())
-    fake_sentence_encoder(monkeypatch)
 
     forms = pd.DataFrame([
         {"price_level": 2, "code_postal": "37000", "open": "ouvert_samedi_soir",
