@@ -17,7 +17,9 @@ from fastapi.testclient import TestClient
 from testcontainers.postgres import PostgresContainer
 
 import numpy as np
-import pandas as pd
+import pandas as p
+
+os.environ.setdefault("E3_TAU", "0.65")
 
 def _ensure_minimal_app_state_for_api(app):
     class _FakeEncoder:

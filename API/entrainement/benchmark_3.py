@@ -409,7 +409,7 @@ def score_func(df, form, model):
         "rating":  h_rating_vector(df, alpha=20.0),
         "city":    h_city_vector(df, form),
         "options": h_opts_vector(df, form),
-        "open":    h_open_vector(df, form, unknown_value=1.0),
+        "open":    h_open_vector(df, form, unknown_value=0.5),
         "text":    score_text(df, form, model, w_rev=0.5, w_desc=0.5, k=3, missing_cos=0.0),
     }
 
@@ -549,7 +549,7 @@ def build_preproc_for_items(df: pd.DataFrame):
 # =========================================================
 W_eval     = {'price':0.08,'rating':0.10,'options':0.10,'text':0.52,'city':0.15,'open':0.05}
 W_proxy     = {'price':0.22,'rating':0.18,'options':0.10,'text':0.20,'city':0.10,'open':0.20}
-tau = 0.60
+tau = float(os.getenv("E3_TAU", "0.5"))
 
 def form_to_row(form, df_catalog):
     row = {c: np.nan for c in df_catalog.columns}
@@ -592,7 +592,7 @@ def build_pointwise(forms_df, preproc, df, X_items, SENT_MODEL, tau=tau, W=W_pro
             'rating':  h_rating_vector(df),
             'city':    h_city_vector(df, form),
             'options': h_opts_vector(df, form),
-            'open':    h_open_vector(df, form, unknown_value=1.0),
+            'open':    h_open_vector(df, form, unknown_value=0.5),
         }
 
         # Texte : features brutes (N,2) et agrégat pour le label
@@ -632,7 +632,7 @@ def build_pairwise(forms_df, preproc, df, X_items, SENT_MODEL, tau=tau, W=W_prox
             'rating':  h_rating_vector(df),
             'city':    h_city_vector(df, form),
             'options': h_opts_vector(df, form),
-            'open':    h_open_vector(df, form, unknown_value=1.0),
+            'open':    h_open_vector(df, form, unknown_value=0.5),
         }
 
         # Texte
@@ -695,7 +695,7 @@ def build_listwise(forms_df, preproc, df, X_items, SENT_MODEL, W=W_proxy, jitter
             'rating':  h_rating_vector(df),
             'city':    h_city_vector(df, form),
             'options': h_opts_vector(df, form),
-            'open':    h_open_vector(df, form, unknown_value=1.0),
+            'open':    h_open_vector(df, form, unknown_value=0.5),
         }
 
         # ----- TEXTE : features brutes pour le modèle -----
@@ -894,7 +894,7 @@ def eval_benchmark(forms_df, preproc, df, X_items, SENT_MODEL, models, k=5,
             'rating': h_rating_vector(df),
             'city':   h_city_vector(df, form),
             'options':h_opts_vector(df, form),
-            'open':   h_open_vector(df, form, unknown_value=1.0),
+            'open':   h_open_vector(df, form, unknown_value=0.5),
         }
         T_eval  = text_features01(df, form, SENT_MODEL, k=EVAL_K) 
         cos_desc01 = T_eval[:, 0]
@@ -1514,6 +1514,8 @@ def main_param():
 def main_entrainement():
     # 1) Charger et préparer le catalogue depuis les tables
     df = load_and_prepare_catalog()
+    df = df.sort_values("id_etab").reset_index(drop=True)
+    ids = df["id_etab"].to_numpy()
     assert not df.empty, "Catalogue vide."
     # 2) Préproc des items (features "classiques" pour Zf & X_items)
     preproc = build_preproc_for_items(df)
