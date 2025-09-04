@@ -39,9 +39,9 @@ EVAL_K = 5
 # =========================================================
 #            UTILITAIRES GÉNÉRAUX (FORM / FEATURES)
 # =========================================================
-def _artifacts_dir() -> Path:
-    api_root = Path(__file__).resolve().parents[1]
-    d = api_root / "artifacts"
+def _artifacts_dir():
+    base = os.getenv("ARTIFACTS_DIR")
+    d = Path(base) if base else (Path.cwd() / "artifacts")
     d.mkdir(parents=True, exist_ok=True)
     return d
 

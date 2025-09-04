@@ -22,7 +22,7 @@ class ApiKeyResponse(BaseModel):
 
 class Form(BaseModel):
     price_level:Optional[int]
-    city:Optional[str]
+    city:Optional[str] = Field(None, alias="code_postal")
     open:Optional[str]
     options:Optional[list]
     description:Optional[str]

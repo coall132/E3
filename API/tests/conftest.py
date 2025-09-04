@@ -5,36 +5,37 @@ override de API.database.engine / SessionLocal, création des tables,
 puis import de API.main pour que les tests qui font `from API import main`
 récupèrent le module déjà configuré.
 """
+
 import os
-import sys
 import contextlib
 import importlib
+
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
 from fastapi.testclient import TestClient
 from testcontainers.postgres import PostgresContainer
 
 
-# ---------- helpers ----------
 def _engine_url_from_pg(pg: PostgresContainer) -> str:
-    url = pg.get_connection_url()  # ex: postgresql://user:pass@127.0.0.1:xxxxx/db
+    """
+    Construit une URL SQLAlchemy psycopg2 à partir du container.
+    testcontainers retourne typiquement 'postgresql://...'
+    """
+    url = pg.get_connection_url() 
     if url.startswith("postgresql://"):
         url = url.replace("postgresql://", "postgresql+psycopg2://", 1)
     return url
 
 
-# ---------- DÉMARRAGE TRES TÔT (avant collecte des tests) ----------
-# Pytest importe conftest.py avant les fichiers de tests -> on peut démarrer ici.
 _PG = PostgresContainer("postgres:16-alpine")
 _PG.start()
 
-# Variables d'env pour ton code (au cas où il s’y réfère)
-os.environ.setdefault("DISABLE_WARMUP", "1")      # évite le warmup ML pendant tests
+os.environ.setdefault("DISABLE_WARMUP", "1")     
 os.environ.setdefault("SKIP_RANK_MODEL", "1")
 os.environ.setdefault("API_STATIC_KEY", "coall")
 os.environ.setdefault("JWT_SECRET", "coall")
-os.environ.setdefault("REDIS_URL", "memory://")   # limiter en mémoire, pas de Redis requis
+os.environ.setdefault("REDIS_URL", "memory://")  
 
 os.environ["POSTGRES_USER"] = _PG.username
 os.environ["POSTGRES_PASSWORD"] = _PG.password
@@ -46,7 +47,6 @@ engine_url = _engine_url_from_pg(_PG)
 os.environ["DATABASE_URL"] = engine_url
 os.environ["SQLALCHEMY_DATABASE_URL"] = engine_url
 
-# Override immédiat de l’engine / SessionLocal AVANT d’importer API.main
 database = importlib.import_module("API.database")
 with contextlib.suppress(Exception):
     database.engine.dispose()
@@ -54,18 +54,15 @@ with contextlib.suppress(Exception):
 database.engine = create_engine(engine_url, future=True)
 database.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=database.engine)
 
-# Schéma + tables
 models = importlib.import_module("API.models")
 models.ensure_ml_schema(database.engine)
 models.Base.metadata.create_all(database.engine)
 
-# Import **maintenant** l’app ; restera en cache pour les tests
 main = importlib.import_module("API.main")
 _APP = main.app
 
-# ---------- hooks/fixtures ----------
+
 def pytest_sessionfinish(session, exitstatus):
-    # arrêt du container à la fin
     with contextlib.suppress(Exception):
         _PG.stop()
 
@@ -82,9 +79,19 @@ def client_realdb(app):
     return TestClient(app)
 
 
+@pytest.fixture(autouse=True)
+def _db_clean():
+    with database.engine.begin() as conn:
+        tbls = [t for t in models.Base.metadata.sorted_tables]
+        if tbls:
+            names = ", ".join(f'"{t.name}"' for t in tbls)
+            conn.execute(text(f"TRUNCATE {names} RESTART IDENTITY CASCADE"))
+    yield
+
+
 @pytest.fixture
 def db_session():
-    """Session courte si certains tests en ont besoin directement."""
+    """Session courte si certains tests veulent manipuler la DB directement."""
     s = database.SessionLocal()
     try:
         yield s
