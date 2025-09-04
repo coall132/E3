@@ -17,7 +17,7 @@ from fastapi.testclient import TestClient
 from testcontainers.postgres import PostgresContainer
 
 import numpy as np
-import pandas as p
+import pandas as pd
 
 os.environ.setdefault("E3_TAU", "0.65")
 
