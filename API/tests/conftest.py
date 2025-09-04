@@ -80,12 +80,11 @@ def client_realdb(app):
 
 
 @pytest.fixture(autouse=True)
-def _db_clean():
-    with database.engine.begin() as conn:
-        tbls = [t for t in models.Base.metadata.sorted_tables]
-        if tbls:
-            names = ", ".join(f'"{t.name}"' for t in tbls)
-            conn.execute(text(f"TRUNCATE {names} RESTART IDENTITY CASCADE"))
+def _db_reset():
+    models.ensure_ml_schema(database.engine)
+    models.Base.metadata.drop_all(database.engine)
+    models.Base.metadata.create_all(database.engine)
+
     yield
 
 
