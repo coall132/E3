@@ -2,6 +2,7 @@ import os, time, socket, subprocess, requests, signal
 import pytest, uvicorn
 from multiprocessing import Process
 from contextlib import closing
+import chromium
 
 # ---------- Utils ----------
 
@@ -105,8 +106,8 @@ def live_streamlit(monkeypatch, live_api):
 # ---------- Tests E2E avec Playwright ----------
 
 @pytest.mark.e2e
-def test_happy_path(playwright, live_api, live_streamlit):
-    browser = playwright.chromium.launch()  # headless=True par défaut
+def test_prediction(playwright, live_api, live_streamlit):
+    browser = playwright.chromium.launch() 
     page = browser.new_page()
     page.goto(live_streamlit, wait_until="networkidle")
 

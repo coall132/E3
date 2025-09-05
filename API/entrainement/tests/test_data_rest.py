@@ -104,11 +104,11 @@ def test_preproc_and_fit_transform(monkeypatch):
     num_cols_present  = [c for c in ['rating','start_price'] if c in df.columns]
     bool_cols_present = [c for c in BOOL_COLS if c in df.columns]
     n_num  = len(num_cols_present)                # 2 ici
-    n_bool = len(bool_cols_present)               # 3 ici (vegetarian, outdoor, restroom)
+    n_bool = len(bool_cols_present)               # 3 ici 
     n_lev  = 1 if 'priceLevel' in df.columns else 0
     if 'code_postal' in df.columns:
         ohe_cp = preproc.named_transformers_['cp'].named_steps['onehot']
-        n_cp   = len(ohe_cp.categories_[0])      # 2 ici: 37000, 37100
+        n_cp   = len(ohe_cp.categories_[0])      # 2 
     else:
         n_cp = 0
     expected_d = n_num + n_bool + n_lev + n_cp
