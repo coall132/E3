@@ -28,20 +28,14 @@ def _wait_http_ok(url, timeout=None):
 
 # ---------- Fixtures serveurs ----------
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="function")   # <-- au lieu de session
 def live_api(monkeypatch):
-    """
-    Retourne la base URL API (ex: http://127.0.0.1:8001 en mode compose,
-    sinon lance FastAPI localement).
-    """
-    # 1) Mode compose (si E2E_API_BASE est défini)
     external = os.getenv("E2E_API_BASE")
     if external:
         base_url = external.rstrip("/")
         _wait_http_ok(base_url + "/")
         return base_url
 
-    # 2) Mode local: spawn uvicorn
     from API.main import app as fastapi_app
     api_port = _free_port()
     base_url = f"http://127.0.0.1:{api_port}"
@@ -50,7 +44,6 @@ def live_api(monkeypatch):
     monkeypatch.setenv("DISABLE_WARMUP", "1")
     monkeypatch.setenv("SKIP_RANK_MODEL", "1")
     monkeypatch.setenv("API_STATIC_KEY", "testpass")
-    # monkeypatch.setenv("DATABASE_URL", "postgresql://.../testdb")  # si besoin
 
     config = uvicorn.Config(fastapi_app, host="127.0.0.1", port=api_port, log_level="warning")
     server = uvicorn.Server(config)
@@ -64,20 +57,14 @@ def live_api(monkeypatch):
         proc.terminate()
         proc.join(timeout=5)
 
-@pytest.fixture(scope="session")
-def live_streamlit(monkeypatch, live_api):
-    """
-    Retourne l’URL Streamlit (compose via E2E_CLIENT_BASE, sinon spawn local).
-    """
-    # 1) Mode compose
+@pytest.fixture(scope="function")   # <-- idem
+def live_streamlit(live_api):
     external = os.getenv("E2E_CLIENT_BASE")
     if external:
         st_url = external.rstrip("/")
-        # Santé Streamlit
         _wait_http_ok(st_url + "/_stcore/health")
         return st_url
 
-    # 2) Mode local: spawn streamlit
     st_port = _free_port()
     st_url = f"http://127.0.0.1:{st_port}"
 
@@ -86,7 +73,7 @@ def live_streamlit(monkeypatch, live_api):
     env["STREAMLIT_BROWSER_GATHER_USAGE_STATS"] = "false"
 
     cmd = [
-        "streamlit", "run", "client_app.py",
+        "streamlit", "run", "client/client_app.py",   # <-- adapte le chemin si besoin
         "--server.headless=true",
         f"--server.port={st_port}",
         "--browser.serverAddress=127.0.0.1",
