@@ -38,6 +38,7 @@ jobs:
           E2E_API_BASE: http://127.0.0.1:8000
           E2E_CLIENT_BASE: http://127.0.0.1:8501
           E2E_STARTUP_TIMEOUT: "120"
+          E3_FAST_TEST: "1"
         run: pytest -q
       # Build & Push vers Docker Hub 
       - name: Set up QEMU

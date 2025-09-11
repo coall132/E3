@@ -31,6 +31,9 @@ import matplotlib.pyplot as plt
 import API.entrainement.Extract
 import API.utils 
 
+FAST = os.getenv("E3_FAST_TEST", "0") == "1"
+n_estimators = 20 if FAST else 200
+
 PROXY_W_REV = 0.5
 PROXY_K = 2
 
@@ -1602,7 +1605,7 @@ def main_entrainement():
     # 6) Modèle : LGBMRanker (LambdaRank)
     mdl_lgbm = lgb.LGBMRanker(
         objective="lambdarank",
-        n_estimators=300,
+        n_estimators=n_estimators,
         learning_rate=0.03,
         num_leaves=127,
         min_child_samples=20,
