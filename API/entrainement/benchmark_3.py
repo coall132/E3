@@ -30,7 +30,10 @@ import matplotlib.pyplot as plt
 
 import API.entrainement.Extract
 import API.utils 
-from entrainement.fallback import FallbackRanker
+try : 
+    from fallback import FallbackRanker
+except :
+    from .fallback import FallbackRanker
 
 FAST = os.getenv("E3_FAST_TEST", "0") == "1"
 n_estimators = 20 if FAST else 200 
