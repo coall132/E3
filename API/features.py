@@ -394,44 +394,50 @@ def pick_anchors_from_df(df, n=8):
 
 def build_item_features_df(df, form, sent_model, include_query_consts=False, anchors=None):
     H = score_func(df, form, sent_model)
+
     data = {
-        "feat_price":   np.asarray(H["price"],   float),
-        "feat_rating":  np.asarray(H["rating"],  float),
-        "feat_options": np.asarray(H["options"], float),
-        "feat_text":    np.asarray(H["text"],    float),
-        "feat_city":    np.asarray(H["city"],    float),
-        "feat_open":    np.asarray(H["open"],    float),
+        "feat_price":   np.asarray(H["price"],   np.float32),
+        "feat_rating":  np.asarray(H["rating"],  np.float32),
+        "feat_options": np.asarray(H["options"], np.float32),
+        "feat_text":    np.asarray(H["text"],    np.float32),  # proxy texte (rev/desc mixé)
+        "feat_city":    np.asarray(H["city"],    np.float32),
+        "feat_open":    np.asarray(H["open"],    np.float32),
     }
+
+    # écart absolu au niveau de prix (normalisé /3)
     lvl = fget(form, 'price_level', np.nan)
     if "priceLevel" in df.columns:
-        lvl_num = (np.nan if (lvl is None or (isinstance(lvl, float) and np.isnan(lvl)))
-                   else float(lvl))
+        lvl_num = (np.nan if (lvl is None or (isinstance(lvl, float) and np.isnan(lvl))) else float(lvl))
         data["f_price_absdiff"] = (
             np.abs(df["priceLevel"].astype(float) - (0.0 if np.isnan(lvl_num) else lvl_num))
-            .fillna(0.0).to_numpy() / 3.0
+              .fillna(0.0).to_numpy(dtype=np.float32) / 3.0
         )
 
+    # nombre d’options demandées
     req_opts = _extract_requested_options(form, df)
-    data["f_req_count"] = np.full(len(df), float(len(req_opts) if req_opts else 0.0))
+    data["f_req_count"] = np.full(len(df), float(len(req_opts) if req_opts else 0.0), dtype=np.float32)
 
-    zf = None
+    # cosinus sûr avec la description (dans [0,1])
     q = (fget(form, 'description', '') or '').strip()
+    zf = None
     if q:
         zf = sent_model.encode([q], normalize_embeddings=True, show_progress_bar=False)[0].astype(np.float32)
-    if "desc_embed" in df.columns and zf is not None:
-        v = (
+
+    if "desc_embed" in df.columns:
+        cos = (
             df["desc_embed"]
-              .apply(lambda e: float(e @ zf) if isinstance(e, np.ndarray) and e.ndim == 1 else 0.0)
-              .apply(lambda c: (c + 1.0) / 2.0)
+              .apply(lambda e: _cos01_safe(e, zf))
+              .astype(np.float32)
               .to_numpy()
         )
     else:
-        v = np.zeros(len(df), dtype=float)
-    data["f_text_desc_cos"] = v
+        cos = np.zeros(len(df), dtype=np.float32)
+    data["f_text_desc_cos"] = cos
 
+    # quelques brutes utiles
     for c in ["rating", "priceLevel", "start_price", "latitude", "longitude"]:
         if c in df.columns:
-            data[f"raw_{c}"] = df[c].astype(float).to_numpy()
+            data[f"raw_{c}"] = df[c].astype(float).to_numpy(dtype=np.float32)
 
     X_df = pd.DataFrame(data, index=df.index)
     if "id_etab" in df.columns:

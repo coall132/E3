@@ -596,26 +596,20 @@ def build_pointwise(forms_df, preproc, df, X_items, SENT_MODEL, tau=tau, W=W_pro
         Zf_sp = preproc.transform(form_to_row(form, df))
         Zf = Zf_sp.toarray()[0] if hasattr(Zf_sp, "toarray") else np.asarray(Zf_sp)[0]
 
-        # Non-texte
-        H_no_text = {
-            'price':   h_price_vector_simple(df, form),
-            'rating':  h_rating_vector(df),
-            'city':    h_city_vector(df, form),
-            'options': h_opts_vector(df, form),
-            'open':    h_open_vector(df, form, unknown_value=0.5),
-        }
-
-        # Texte : features brutes (N,2) et agrégat pour le label
         T = text_features01(df, form, SENT_MODEL, k=PROXY_K)
+
+        H_no_text = {
+            'price'  : h_price_vector_simple(df, form),
+            'rating' : h_rating_vector(df),
+            'city'   : h_city_vector(df, form),
+            'options': h_opts_vector(df, form),
+            'open'   : h_open_vector(df, form, unknown_value=1.0), 
+        }
         text_proxy = PROXY_W_REV * T[:, 1] + (1.0 - PROXY_W_REV) * T[:, 0]
+        gains = aggregate_gains({**H_no_text, 'text': text_proxy}, W_proxy)
 
-        # Gains/labels = règle proxy complète (inclut le texte), mais
-        # on NE donne PAS l’agrégat comme feature
-        H_lbl = {**H_no_text, 'text': text_proxy}
-        gains = aggregate_gains(H_lbl, W)
-
-        y = (gains >= tau).astype(np.int32)
-        sw = np.abs(gains - tau).astype(np.float32) + 1e-3
+        y  = (gains >= tau).astype(np.int32)                
+        sw = (np.abs(gains - tau) + 1e-3).astype(np.float32)
 
         # Features modèle
         Xq = pair_features(Zf, X_items, T)

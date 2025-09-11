@@ -499,13 +499,13 @@ def ensure_etabs_exist(db: Session, ids: list[int]):
         return
     ids = [int(x) for x in ids]
     existing = {
-        x for (x,) in db.query(models.Etab.id)
-                        .filter(models.Etab.id.in_(ids))
+        x for (x,) in db.query(models.Etablissement.id_etab)
+                        .filter(models.Etablissement.id_etab.in_(ids))
                         .all()
     }
     to_add = [i for i in ids if i not in existing]
     if to_add:
         # Si ton modèle a des colonnes NOT NULL, mets des valeurs par défaut ici.
-        new_rows = [models.Etab(id=i) for i in to_add]
+        new_rows = [models.Etablissement(id_etab=i) for i in to_add]
         db.bulk_save_objects(new_rows)
         db.flush()
