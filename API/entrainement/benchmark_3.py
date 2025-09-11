@@ -440,17 +440,32 @@ def text_features(df, form, model, k=PROXY_K):
     cos_rev  = (cos_rev  + 1.0)/2.0
     return np.stack([cos_desc, cos_rev], axis=1)
 
-def text_features01(df, form, model, k=3, missing_cos=0.0):
+def cos01_safe(v: np.ndarray, z: np.ndarray) -> float:
+    """Cosinus robuste ∈ [0,1] avec alignement des dimensions et normalisation."""
+    v = np.asarray(v, np.float32).ravel()
+    z = np.asarray(z, np.float32).ravel()
+    m = min(v.size, z.size)
+    if m == 0:
+        return 0.0
+    vv, zz = v[:m], z[:m]
+    nv = np.linalg.norm(vv); nz = np.linalg.norm(zz)
+    if nv == 0.0 or nz == 0.0:
+        return 0.0
+    c = float(np.dot(vv / nv, zz / nz))          # c ∈ [-1,1]
+    return 0.5 * (np.clip(c, -1.0, 1.0) + 1.0)   # → [0,1]
+
+def text_features01(df, form, model, k=3, missing_cos01=0.0):
     """
     Retourne un array (N,2) dans [0,1] :
       [:,0] = cos_desc01,  [:,1] = cos_rev_topk01
     """
-    q = (fget(form, 'description', '') or '').strip()
+    q = (form.get('description') or '').strip()
     N = len(df)
     out = np.zeros((N, 2), dtype=np.float32)
 
+    # pas de texte => neutre
     if not q:
-        out[:] = 1.0   # neutre si pas de texte
+        out[:] = 1.0
         return out
 
     z = model.encode([q], normalize_embeddings=True, show_progress_bar=False)[0].astype(np.float32)
@@ -461,21 +476,29 @@ def text_features01(df, form, model, k=3, missing_cos=0.0):
     if desc_list is not None:
         for i, v in enumerate(desc_list):
             if isinstance(v, np.ndarray) and v.ndim == 1 and v.size > 0:
-                cos_d[i] = float(np.dot(v.astype(np.float32), z))
+                cos_d[i] = cos01_safe(v, z)
 
     # cos top-k sur les reviews
     cos_r = np.full(N, np.nan, dtype=np.float32)
     rev_list = df.get('rev_embeds', None)
     if rev_list is not None:
-        for i, lst in enumerate(rev_list):
-            val = topk_mean_cosine(lst, z, k=k)
-            if val is not None:
-                cos_r[i] = float(val)
+        for i, L in enumerate(rev_list):
+            if isinstance(L, list) and len(L) > 0:
+                vals = [
+                    cos01_safe(r, z)
+                    for r in L
+                    if isinstance(r, np.ndarray) and r.ndim == 1 and r.size > 0
+                ]
+                if vals:
+                    k_ = min(k, len(vals))
+                    cos_r[i] = float(np.sort(np.asarray(vals, np.float32))[-k_:].mean())
 
-    # remplit les manquants et passe en [0,1]
-    cos_d = np.where(np.isnan(cos_d), missing_cos, cos_d)
-    cos_r = np.where(np.isnan(cos_r), missing_cos, cos_r)
-    return np.stack([(cos_d + 1.0) / 2.0, (cos_r + 1.0) / 2.0], axis=1)
+    # remplit les manquants (déjà en [0,1])
+    cos_d = np.where(np.isnan(cos_d), missing_cos01, cos_d)
+    cos_r = np.where(np.isnan(cos_r), missing_cos01, cos_r)
+    out[:, 0] = cos_d
+    out[:, 1] = cos_r
+    return out
 
 def pair_features(Zf, X_items, T, diff_scale=0.05):
     diff = np.abs(X_items - Zf.reshape(1, -1)) * float(diff_scale)  # (N, d)
@@ -604,8 +627,8 @@ def build_pointwise(forms_df, preproc, df, X_items, SENT_MODEL, tau=tau, W=W_pro
         H_lbl = {**H_no_text, 'text': text_proxy}
         gains = aggregate_gains(H_lbl, W)
 
-        y  = (gains >= tau).astype(int)
-        sw = np.abs(gains - tau) + 1e-3
+        y = (gains >= tau).astype(np.int32)
+        sw = np.abs(gains - tau).astype(np.float32) + 1e-3
 
         # Features modèle
         Xq = pair_features(Zf, X_items, T)
@@ -1472,7 +1495,14 @@ def main_param():
 
     # ---------- Sauvegardes ----------
     outdir = _artifacts_dir() 
-    summary.to_csv(outdir / "benchmark_summary_param_6.csv", index=True)
+    KEEP = {
+    "P@5_mean","P@5_lo95","P@5_hi95",
+    "Recall@5_mean","Recall@5_lo95","Recall@5_hi95",
+    "BinaryNDCG@5_mean","BinaryNDCG@5_lo95","BinaryNDCG@5_hi95",
+    "DCG@5_mean","DCG@5_lo95","DCG@5_hi95",}
+    
+    summary_to_save = summary[[c for c in summary.columns if c in KEEP]].copy()
+    summary_to_save.to_csv(outdir / "benchmark_summary_6.csv", index=True)
     per_query.to_csv(outdir / "benchmark_per_query_param_6.csv", index=False)
 
     Path("API/artifacts").mkdir(exist_ok=True, parents=True)
@@ -1515,113 +1545,128 @@ def main_entrainement():
     # 1) Charger et préparer le catalogue depuis les tables
     df = load_and_prepare_catalog()
     df = df.sort_values("id_etab").reset_index(drop=True)
-    ids = df["id_etab"].to_numpy()
     assert not df.empty, "Catalogue vide."
+
     # 2) Préproc des items (features "classiques" pour Zf & X_items)
     preproc = build_preproc_for_items(df)
-    
 
     # 3) Jeu de formulaires
     forms_csv = os.getenv("FORMS_CSV", "API/entrainement/forms_restaurants_dept37_single_cp.csv")
     if not Path(forms_csv).exists():
-        # fallback : petit set par défaut
         return "Erreur, csv non trouvé"
-    else:
-        # parse simple CSV (colonnes libres ; la fn ci-dessous sait extraire)
-        def forms_from_csv(path_csv: str, df_catalog: pd.DataFrame):
-            df_forms = pd.read_csv(path_csv)
-            out = []
-            for _, r in df_forms.iterrows():
-                f = {"type": "restaurant"}
-                if 'price_level' in df_forms.columns:
-                    val = r.get('price_level', None)
-                    try:
-                        if pd.notna(val) and str(val).strip() != '':
-                            f['price_level'] = int(float(val))
-                    except Exception:
-                        pass
-                if 'code_postal' in df_forms.columns:
-                    cp = str(r.get('code_postal', '')).strip()
-                    if cp and cp.lower() != 'nan':
-                        f['code_postal'] = cp
-                if 'open' in df_forms.columns:
-                    o = str(r.get('open', '')).strip()
-                    if o and o.lower() != 'nan':
-                        f['open'] = o
-                if 'options' in df_forms.columns:
-                    opts_raw = r.get('options', '')
-                    opts = []
-                    if pd.notna(opts_raw):
-                        s = str(opts_raw).strip()
-                        if s.startswith('['):
-                            try:
-                                parsed = json.loads(s)
-                                if isinstance(parsed, list):
-                                    opts = [x for x in parsed if isinstance(x, str)]
-                            except Exception:
-                                pass
-                        if not opts:
-                            toks = [t.strip() for t in re.split(r'[;,]', s) if t.strip()]
-                            opts = toks
-                    if opts:
-                        f['options'] = opts
-                if 'description' in df_forms.columns:
-                    d = r.get('description', '')
-                    if pd.notna(d):
-                        s = str(d).strip()
-                        if s and s.lower() != 'nan':
-                            f['description'] = s
-                out.append(f)
-            return out
-        forms = forms_from_csv(forms_csv, df)
+
+    def forms_from_csv(path_csv: str, df_catalog: pd.DataFrame):
+        df_forms = pd.read_csv(path_csv)
+        out = []
+        for _, r in df_forms.iterrows():
+            f = {"type": "restaurant"}
+            if 'price_level' in df_forms.columns:
+                val = r.get('price_level', None)
+                try:
+                    if pd.notna(val) and str(val).strip() != '':
+                        f['price_level'] = int(float(val))
+                except Exception:
+                    pass
+            if 'code_postal' in df_forms.columns:
+                cp = str(r.get('code_postal', '')).strip()
+                if cp and cp.lower() != 'nan':
+                    f['code_postal'] = cp
+            if 'open' in df_forms.columns:
+                o = str(r.get('open', '')).strip()
+                if o and o.lower() != 'nan':
+                    f['open'] = o
+            if 'options' in df_forms.columns:
+                opts_raw = r.get('options', '')
+                opts = []
+                if pd.notna(opts_raw):
+                    s = str(opts_raw).strip()
+                    if s.startswith('['):
+                        try:
+                            parsed = json.loads(s)
+                            if isinstance(parsed, list):
+                                opts = [x for x in parsed if isinstance(x, str)]
+                        except Exception:
+                            pass
+                    if not opts:
+                        toks = [t.strip() for t in re.split(r'[;,]', s) if t.strip()]
+                        opts = toks
+                if opts:
+                    f['options'] = opts
+            if 'description' in df_forms.columns:
+                d = r.get('description', '')
+                if pd.notna(d):
+                    s = str(d).strip()
+                    if s and s.lower() != 'nan':
+                        f['description'] = s
+            out.append(f)
+        return out
+
+    forms = forms_from_csv(forms_csv, df)
     print("debut IA")
+
     # 4) Matrice d'items (pour pair_features)
+    # >>> IMPORTANT : on fit le préproc ICI (train uniquement), et on le SAUVEGARDE ensuite.
     X_items = preproc.fit_transform(df)
     X_items = X_items.toarray().astype(np.float32) if hasattr(X_items, "toarray") else np.asarray(X_items, dtype=np.float32)
+    print(f"[dims] X_items = {X_items.shape}")  # debug utile pour d vs N
 
     # Split train/test sur les formulaires
     forms_tr, forms_te = train_test_split(list(forms), test_size=0.25, random_state=123)
 
-    # 5) Datasets pointwise & pairwise
-    Xtr, ytr, swtr, _ = build_pointwise(forms_tr, preproc, df, X_items, SENT_MODEL)
-    Xte, yte, swte, qte = build_pointwise(forms_te, preproc, df, X_items, SENT_MODEL)
-    Xp, yp, wp = build_pairwise(forms_tr, preproc, df, X_items, SENT_MODEL, W=W_proxy, top_m=10, bot_m=10)
-    # symétrisation
-    Xp2 = np.vstack([Xp, -Xp])
-    yp2 = np.concatenate([np.ones(len(Xp)), np.zeros(len(Xp))])
-    wp2 = np.concatenate([wp, wp])
+    # 5) Datasets LISTWISE (pour LambdaRank)
+    #    On utilise la même logique que dans le param tuning
+    Xlw_tr, ylw_tr, glw_tr = build_listwise(forms_tr, preproc, df, X_items, SENT_MODEL, W=W_proxy)
+    Xlw_te, ylw_te, glw_te = build_listwise(forms_te, preproc, df, X_items, SENT_MODEL, W=W_proxy)
 
-    # 6) Modèles
+    # 6) Modèle : LGBMRanker (LambdaRank)
+    mdl_lgbm = lgb.LGBMRanker(
+        objective="lambdarank",
+        n_estimators=300,
+        learning_rate=0.03,
+        num_leaves=127,
+        min_child_samples=20,
+        reg_lambda=0.01,
+        subsample=0.9,
+        colsample_bytree=1,
+        random_state=42,
+        label_gain=[0, 1, 3, 7],
+    )
+    mdl_lgbm.fit(
+        Xlw_tr, ylw_tr,
+        group=glw_tr,
+        eval_set=[(Xlw_te, ylw_te)],
+        eval_group=[glw_te],
+        eval_at=[5],
+    )
 
-    mdl_hgb = HistGradientBoostingClassifier(random_state=42,learning_rate= 0.1,max_leaf_nodes= 31
-                                             ,min_samples_leaf=20,l2_regularization=0.001,max_bins=255)
-    mdl_svm = LinearSVC(random_state=42)
-
-    mdl_hgb.fit(Xtr, ytr, sample_weight=swtr)
-    mdl_svm.fit(Xtr, ytr)  # pas de sample_weight
-
-    # 7) Évaluation ranking
-    models = {
-    "LinearSVC": mdl_svm,
-    "HistGrad":mdl_hgb}
-
-    summary, per_query = eval_benchmark(forms_te, preproc, df, X_items, SENT_MODEL, models,
-                                        k=5, tau_q=0.85, use_top_m=10, jitter=1e-6, n_boot=300)
+    # 7) Évaluation ranking (pipeline commun)
+    models = {"LGBMRanker": mdl_lgbm}
+    summary, per_query = eval_benchmark(
+        forms_te, preproc, df, X_items, SENT_MODEL, models,
+        k=5, tau_q=0.85, use_top_m=10, jitter=1e-6, n_boot=300
+    )
     print("\n=== Résumé (moyennes + IC95) ===")
     print(summary)
 
-    outdir = _artifacts_dir() 
-    summary.to_csv(outdir / "benchmark_summary.csv", index=True)
+    # 8) Sauvegardes
+    outdir = _artifacts_dir()
+    KEEP = {
+    "P@5_mean","P@5_lo95","P@5_hi95",
+    "Recall@5_mean","Recall@5_lo95","Recall@5_hi95",
+    "BinaryNDCG@5_mean","BinaryNDCG@5_lo95","BinaryNDCG@5_hi95",
+    "DCG@5_mean","DCG@5_lo95","DCG@5_hi95",}
+    
+    summary_to_save = summary[[c for c in summary.columns if c in KEEP]].copy()
+    summary_to_save.to_csv(outdir / "benchmark_summary.csv", index=True)
     per_query.to_csv(outdir / "benchmark_per_query.csv", index=False)
 
-    preproc_path = outdir / "preproc_items.joblib"
-    model_path   = outdir / "rank_model.joblib"
+    preproc_path = outdir / "preproc_items1.joblib"
+    model_path   = outdir / "rank_model1.joblib"
 
     print(f"[save] preproc -> {preproc_path.resolve()}")
     joblib.dump(preproc, preproc_path, compress=("xz", 3))
 
-    rank_model = mdl_hgb  
-
+    rank_model = mdl_lgbm
     print(f"[save] rank model ({type(rank_model)}) -> {model_path.resolve()}")
     try:
         joblib.dump(rank_model, model_path, compress=("xz", 3))
@@ -1630,9 +1675,10 @@ def main_entrainement():
         import traceback
         print("[save][ERROR] Impossible d'écrire rank_model.joblib :", e)
         traceback.print_exc()
-    
+
     print("\nFichiers générés dans", outdir.resolve())
     print("\nFichiers générés")
+
 
 def _dispatch(mode: str):
     mode = (mode or "").lower()

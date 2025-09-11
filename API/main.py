@@ -234,17 +234,13 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
 
     if use_ml and (model is not None) and (preproc is not None) and (X_items is not None):
         try:
-            # Zf = encodage du formulaire avec le même PREPROC que training
             Zf_sp = preproc.transform(form_to_row(form.model_dump(), df))
             Zf = Zf_sp.toarray()[0] if hasattr(Zf_sp, "toarray") else np.asarray(Zf_sp)[0]
 
-            # features texte brutes (N,2) en [0,1], avec k=2 comme au training
             T_feat = text_features01(df, form.model_dump(), app.state.SENT_MODEL, k=PROXY_K_INFER)
 
-            # concat diff + T (shape = N, d+2) exactement comme au training
             Xq = pair_features(Zf, X_items, T_feat, diff_scale=DIFF_SCALE)
 
-            # prédiction (supporte predict / decision_function / predict_proba)
             scores = utils._predict_scores(model, Xq)
             used_ml = True
 

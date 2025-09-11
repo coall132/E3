@@ -11,6 +11,87 @@ st.set_page_config(page_title="Reco Restaurants — Client API", layout="wide")
 st.title("Reco Restaurants — Client Streamlit (API externe)")
 DEFAULT_HTTP_TIMEOUT = int(os.getenv("API_HTTP_TIMEOUT", "360"))
 
+DEFAULT_OPTIONS = [
+    "allowsDogs", "delivery", "goodForChildren", "goodForGroups",
+    "goodForWatchingSports", "outdoorSeating", "reservable", "restroom",
+    "servesVegetarianFood", "servesBrunch", "servesBreakfast", "servesDinner", "servesLunch",
+]
+
+OPTION_LABELS = {
+    "allowsDogs": "Animaux acceptés",
+    "delivery": "Livraison",
+    "goodForChildren": "Adapté aux enfants",
+    "goodForGroups": "Groupes bienvenus",
+    "goodForWatchingSports": "Diffusion d’événements sportifs",
+    "outdoorSeating": "Terrasse",
+    "reservable": "Réservable",
+    "restroom": "Toilettes",
+    "servesVegetarianFood": "Options végétariennes",
+    "servesBrunch": "Brunch",
+    "servesBreakfast": "Petit-déjeuner",
+    "servesDinner": "Dîner",
+    "servesLunch": "Déjeuner",
+}
+OPTION_KEYS = {
+    "allowsDogs": "Chiens acceptés",
+    "delivery": "Livraison",
+    "goodForChildren": "Enfants bienvenus",
+    "goodForGroups": "Groupes bienvenus",
+    "goodForWatchingSports": "TV / sports",
+    "outdoorSeating": "Terrasse",
+    "reservable": "Réservable",
+    "restroom": "Toilettes",
+    "servesVegetarianFood": "Végétarien",
+    "servesBrunch": "Brunch",
+    "servesBreakfast": "Petit-déj",
+    "servesDinner": "Dîner",
+    "servesLunch": "Déjeuner",
+}
+def get_available_options():
+    """
+    Essaie de récupérer la liste d'options côté API (GET /meta/options).
+    Si indisponible, on retourne la liste locale DEFAULT_OPTIONS.
+    La valeur retournée DOIT être la clé attendue par le backend.
+    """
+    try:
+        url = f"{_normalize_base(st.session_state.get('base_url') or DEFAULT_API_BASE)}/meta/options"
+        r = requests.get(url, timeout=10)
+        if r.ok:
+            data = r.json()
+            opts = data.get("options")
+            if isinstance(opts, list) and all(isinstance(x, str) for x in opts):
+                return opts
+    except Exception:
+        pass
+    return DEFAULT_OPTIONS
+
+def _to_bool(v):
+    if isinstance(v, bool): 
+        return v
+    if v is None: 
+        return False
+    return str(v).strip().lower() in {"1","true","True"}
+
+def _extract_options(details: dict) -> list[str]:
+    """
+    Cherche les booléens d'option soit à plat dans details,
+    soit dans details['options'] si c'est un dict.
+    """
+    srcs = [details]
+    if isinstance(details.get("options"), dict):
+        srcs.append(details["options"])
+
+    res = []
+    for key, label in OPTION_KEYS.items():
+        val = None
+        for src in srcs:
+            if key in src:
+                val = src[key]
+                break
+        if _to_bool(val):
+            res.append(label)
+    return res
+
 def _api_post(url: str, *, json_body=None, headers=None, params=None, timeout: int=DEFAULT_HTTP_TIMEOUT):
     r = requests.post(url, json=json_body, headers=headers, params=params, timeout=(5, timeout))
     try:
@@ -132,7 +213,25 @@ with st.form("predict_form", clear_on_submit=False):
         city = st.text_input("Ville", value="")
         open_str = st.text_input("Ouverture (texte libre)", value="", placeholder="ex: 'ouvert maintenant'")
     with c2:
-        options_str = st.text_input("Options (séparées par des virgules)", value="", placeholder="ex: terrasse,wifi,goodforchildren")
+        all_opts = get_available_options()
+        multi_opts = st.toggle("Sélection multiple d'options", value=True, key="opts_multi")
+
+        if multi_opts:
+            selected_opts = st.multiselect(
+                "Options disponibles",
+                options=all_opts,
+                default=[],
+                format_func=lambda x: OPTION_LABELS.get(x, x),  # affiche un label lisible
+                help="Choisissez une ou plusieurs options"
+            )
+        else:
+            selected_single = st.selectbox(
+                "Option disponible",
+                options=["(aucune)"] + all_opts,
+                format_func=lambda x: OPTION_LABELS.get(x, x) if x != "(aucune)" else x,
+                help="Sélection simple"
+            )
+            selected_opts = [] if selected_single == "(aucune)" else [selected_single]
         description = st.text_area("Description / préférences", height=100, placeholder="Ex: italien cosy, terrasse, budget moyen…")
     c3, c4, c5 = st.columns([1,1,2])
     with c3:
@@ -143,10 +242,10 @@ with st.form("predict_form", clear_on_submit=False):
 
 if submitted:
     form = {
-        "price_level": None if price_level == "(non précisé)" else price_level,
-        "city": city or None,
+        "price_level": 2 if price_level == "(non précisé)" else price_level,
+        "city": city or 37000,
         "open": open_str or "",
-        "options": [o.strip() for o in options_str.replace(";", ",").split(",") if o.strip()] if options_str else [],
+        "options": selected_opts,
         "description": description or "",
     }
     try:
@@ -162,27 +261,24 @@ if submitted:
         rows = []
         for it in items_rich:
             d = it.get("details") or {}
+            opts_list = _extract_options(d)
             row = {
                 "rank": it.get("rank"),
                 "score": it.get("score"),
                 "id_etab": it.get("etab_id"),
                 "name": _pick_first(d, ["name", "nom", "title", "libelle"]),
-                "city": _pick_first(d, ["city", "ville"]),
+                "city": _pick_first(d, ['adresse',"code_postal", "cp"]),
                 "rating": _pick_first(d, ["rating", "note"]),
-                "price_level": _pick_first(d, ["price_level", "prix"]),
-                "options": _pick_first(d, ["options"]),
+                "price_level": _pick_first(d, ["priceLevel"]),
+                "options": opts_list,
                 "description": _pick_first(d, ["description", "desc"]),
             }
             rows.append(row)
 
-        st.write(f"**prediction_id**: `{resp.get('prediction_id') or resp.get('id')}` | **k**: {resp.get('k')} | **model**: {resp.get('model_version', 'n/a')}")
         if rows:
             st.dataframe(rows, use_container_width=True, hide_index=True)
         else:
-            st.info("Aucun champ attendu trouvé dans `items_rich`. Voir la réponse brute ci-dessous.")
-
-        with st.expander("Réponse JSON brute"):
-            st.json(resp)
+            st.info("Aucun champ attendu trouvé dans `items_rich`.")
     except Exception as e:
         st.error(f"Erreur /predict : {e}")
 
@@ -208,8 +304,6 @@ if st.button("Envoyer /feedback", disabled=disabled_fb):
         with st.spinner(f"Appel /feedback… (timeout {to}s)"):
             resp = _api_post(url, json_body=payload, headers=_bearer_headers(), timeout=to)
         st.success("Feedback envoyé")
-        with st.expander("Réponse brute"):
-            st.json(resp)
     except Exception as e:
         st.error(f"Erreur /feedback : {e}")
 

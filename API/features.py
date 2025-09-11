@@ -256,22 +256,35 @@ def form_to_row(form, df_catalog):
             row[c] = 0.0
     return pd.DataFrame([row])[df_catalog.columns]
 
-def text_features01(df, form, sent_model, k=2, missing_cos=0.0):
+def _cos01_safe(v: np.ndarray, z: np.ndarray) -> float:
+    """Cosinus robuste ∈ [0,1] avec alignement des dimensions et normalisation."""
+    v = np.asarray(v, np.float32).ravel()
+    z = np.asarray(z, np.float32).ravel()
+    m = min(v.size, z.size)
+    if m == 0:
+        return 0.0
+    vv, zz = v[:m], z[:m]
+    nv = np.linalg.norm(vv); nz = np.linalg.norm(zz)
+    if nv == 0.0 or nz == 0.0:
+        return 0.0
+    c = float(np.dot(vv / nv, zz / nz))          # c ∈ [-1,1]
+    return 0.5 * (np.clip(c, -1.0, 1.0) + 1.0)   # → [0,1]
+
+def text_features01(df, form, model, k=3, missing_cos01=0.0):
     """
-    Aligne l'inférence sur le training:
-      -> retourne (N, 2) dans [0,1]:
-         [:,0] = cos_desc01,  [:,1] = cos_rev_topk01
+    Retourne un array (N,2) dans [0,1] :
+      [:,0] = cos_desc01,  [:,1] = cos_rev_topk01
     """
-    q = (fget(form, 'description', '') or '').strip()
+    q = (form.get('description') or '').strip()
     N = len(df)
     out = np.zeros((N, 2), dtype=np.float32)
 
+    # pas de texte => neutre
     if not q:
-        # neutre si pas de texte
         out[:] = 1.0
         return out
 
-    z = sent_model.encode([q], normalize_embeddings=True, show_progress_bar=False)[0].astype(np.float32)
+    z = model.encode([q], normalize_embeddings=True, show_progress_bar=False)[0].astype(np.float32)
 
     # cos avec la description
     cos_d = np.full(N, np.nan, dtype=np.float32)
@@ -279,21 +292,29 @@ def text_features01(df, form, sent_model, k=2, missing_cos=0.0):
     if desc_list is not None:
         for i, v in enumerate(desc_list):
             if isinstance(v, np.ndarray) and v.ndim == 1 and v.size > 0:
-                cos_d[i] = float(np.dot(v.astype(np.float32), z))
+                cos_d[i] = _cos01_safe(v, z)
 
     # cos top-k sur les reviews
     cos_r = np.full(N, np.nan, dtype=np.float32)
     rev_list = df.get('rev_embeds', None)
     if rev_list is not None:
-        for i, lst in enumerate(rev_list):
-            val = topk_mean_cosine(lst, z, k=k)
-            if val is not None:
-                cos_r[i] = float(val)
+        for i, L in enumerate(rev_list):
+            if isinstance(L, list) and len(L) > 0:
+                vals = [
+                    _cos01_safe(r, z)
+                    for r in L
+                    if isinstance(r, np.ndarray) and r.ndim == 1 and r.size > 0
+                ]
+                if vals:
+                    k_ = min(k, len(vals))
+                    cos_r[i] = float(np.sort(np.asarray(vals, np.float32))[-k_:].mean())
 
-    # remplit les manquants et passe en [0,1]
-    cos_d = np.where(np.isnan(cos_d), missing_cos, cos_d)
-    cos_r = np.where(np.isnan(cos_r), missing_cos, cos_r)
-    return np.stack([(cos_d + 1.0) / 2.0, (cos_r + 1.0) / 2.0], axis=1)
+    # remplit les manquants (déjà en [0,1])
+    cos_d = np.where(np.isnan(cos_d), missing_cos01, cos_d)
+    cos_r = np.where(np.isnan(cos_r), missing_cos01, cos_r)
+    out[:, 0] = cos_d
+    out[:, 1] = cos_r
+    return out
 
 def pair_features(Zf, X_items, T, diff_scale=0.05):
     """
@@ -321,6 +342,11 @@ def pair_features(Zf, X_items, T, diff_scale=0.05):
         raise ValueError(f"Zf dim={Zf.shape[0]} incompatible avec X_items dim={d}")
 
     diff = np.abs(X_items - Zf.reshape(1, -1)) * float(diff_scale)
+    return np.hstack([diff, T]).astype(np.float32)
+
+def pair_features(Zf, X_items, T, diff_scale=0.05):
+    diff = np.abs(X_items - Zf.reshape(1, -1)) * float(diff_scale)  # (N, d)
+    T = np.asarray(T, dtype=np.float32)                             # (N, 2) = [cos_desc01, cos_rev01]
     return np.hstack([diff, T]).astype(np.float32)
 
 def _toint_safe(X):
