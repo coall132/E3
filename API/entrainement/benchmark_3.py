@@ -32,8 +32,8 @@ import API.entrainement.Extract
 import API.utils 
 
 FAST = os.getenv("E3_FAST_TEST", "0") == "1"
-n_estimators = 20 if FAST else 200
-
+n_estimators = 20 if FAST else 200 
+   
 PROXY_W_REV = 0.5
 PROXY_K = 2
 
