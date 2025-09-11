@@ -5,61 +5,117 @@ on:
     branches: [ main ]
   pull_request:
 
-jobs:
-  test-and-build:
-    runs-on: ubuntu-latest
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
 
+jobs:
+  tests-api:
+    runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
-    defaults:
-      run:
-        working-directory: API
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-      - name: Cache pip
+
+      - name: Cache pip (API)
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
-          key: pip-${{ runner.os }}-${{ hashFiles('**/requirements_api.txt') }}
-      - name: Install deps
+          key: pip-api-${{ runner.os }}-${{ hashFiles('API/requirements_dev.txt') }}
+
+      - name: Install dev deps (API)
+        working-directory: API
         run: pip install -r requirements_dev.txt
-      - name: Run tests
+
+  tests-client-e2e:
+    needs: tests-api
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cache pip (client)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-client-${{ runner.os }}-${{ hashFiles('client/requirements_client.txt') }}
+
+      - name: Install client deps + pytest
+        run: |
+          pip install -r client/requirements_client.txt
+          pip install pytest pytest-playwright
+
+      # Installe Chromium + deps système pour Playwright
+      - name: Install Playwright browsers
+        uses: microsoft/playwright-github-action@v1
+
+      - name: Run E2E tests (client)
+        working-directory: client
         env:
-          DISABLE_WARMUP: "1"
+          PYTHONPATH: ${{ github.workspace }}
           API_STATIC_KEY: ${{ secrets.API_STATIC_KEY }}
-          PYTHONPATH: ${{ github.workspace }} 
-          E2E_API_BASE: http://127.0.0.1:8000
-          E2E_CLIENT_BASE: http://127.0.0.1:8501
           E2E_STARTUP_TIMEOUT: "120"
-          E3_FAST_TEST: "1"
         run: pytest -q
-      # Build & Push vers Docker Hub 
+
+  build-and-push:
+    needs: [tests-api, tests-client-e2e]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
- 
-      - name: Login to DockerHub 
-        if: github.ref == 'refs/heads/main'
+
+      - name: Login to DockerHub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-      
-      - name: Build and push
-        if: github.ref == 'refs/heads/main'
+
+      # --- Build & push API image ---
+      - name: Build & push API image
         uses: docker/build-push-action@v6
         with:
-          context: .            
-          file: ./API/Dockerfile   
-          target: prod   
+          context: .
+          file: ./API/Dockerfile
+          target: prod
           push: true
-          tags: ${{ secrets.DOCKERHUB_USERNAME }}/restaurant-api:latest,${{ secrets.DOCKERHUB_USERNAME }}/restaurant-api:${{ github.sha }}
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/restaurant-api:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/restaurant-api:${{ github.sha }}
+          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/restaurant-api:buildcache
+          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/restaurant-api:buildcache,mode=max
+
+      # --- Build & push Streamlit client image ---
+      - name: Build & push Client (Streamlit) image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./client
+          file: ./client/Dockerfile.streamlit
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/restaurant-client:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/restaurant-client:${{ github.sha }}
+          cache-from: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/restaurant-client:buildcache
+          cache-to: type=registry,ref=${{ secrets.DOCKERHUB_USERNAME }}/restaurant-client:buildcache,mode=max
