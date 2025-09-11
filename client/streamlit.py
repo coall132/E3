@@ -270,7 +270,6 @@ if submitted:
                 "city": _pick_first(d, ['adresse',"code_postal", "cp"]),
                 "rating": _pick_first(d, ["rating", "note"]),
                 "price_level": _pick_first(d, ["priceLevel"]),
-                "options": opts_list,
                 "description": _pick_first(d, ["description", "desc"]),
             }
             rows.append(row)

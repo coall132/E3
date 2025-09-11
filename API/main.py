@@ -268,7 +268,6 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
     if hasattr(models.Prediction, "user_id"):
         setattr(pred_row, "user_id", user_id)
 
-    # Construire la liste des items prédits
     items = []
     for r, i in enumerate(sel, start=1):
         etab_id = int(df.iloc[i]["id_etab"]) if "id_etab" in df.columns else int(i)
@@ -276,26 +275,21 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
 
     # ---------- Persistance robuste ----------
     try:
-        # 1) insère la prediction (sans items) pour obtenir un id
         db.add(pred_row)
-        db.flush()  # pred_row.id disponible
+        db.flush() 
 
-        # 2) s'assurer que les etab existent
         CRUD.ensure_etabs_exist(db, [it.etab_id for it in items])
 
-        # 3) attacher les items et persister
         pred_row.items = items
         db.flush()
         db.commit()
         db.refresh(pred_row)
 
     except IntegrityError as e:
-        # FK etab_id encore manquante ou autre contrainte
         db.rollback()
         logger.warning("FK violation lors de l'insertion des items: %s. "
                     "On sauvegarde la prédiction sans items.", e)
 
-        # Réinsère la prédiction seule (sans items), pour garantir un prediction_id
         try:
             pred_row.items = []
             db.add(pred_row)
