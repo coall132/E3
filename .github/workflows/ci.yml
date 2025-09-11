@@ -56,11 +56,11 @@ jobs:
       - name: Install client deps + pytest
         run: |
           pip install -r client/requirements_client.txt
-          pip install pytest pytest-playwright
+          pip install -U pytest pytest-playwright playwright
 
-      # Installe Chromium + deps système pour Playwright
-      - name: Install Playwright browsers
-        uses: microsoft/playwright-github-action@v1
+      - name: Install Playwright browsers (Python)
+        run: |
+          python -m playwright install --with-deps chromium
 
       - name: Run E2E tests (client)
         working-directory: client
