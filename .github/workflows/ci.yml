@@ -52,42 +52,23 @@ jobs:
         with:
           path: ~/.cache/pip
           key: pip-client-${{ runner.os }}-${{ hashFiles('client/requirements_client.txt') }}
-
-      - name: Build API image
-        run: docker build -t api-test -f API/Dockerfile --target prod .
-
-      - name: Run API container
+      
+      - name: Install client deps + pytest
         run: |
-          docker run -d --name api-test \
-            -p 8001:8000 \
-            -e DISABLE_WARMUP=1 \
-            -e SKIP_RANK_MODEL=1 \
-            -e API_STATIC_KEY=testpass \
-            api-test
-          for i in {1..60}; do
-            if curl -fsS http://127.0.0.1:8001/ >/dev/null; then exit 0; fi
-            sleep 2
-          done
-          echo "API not responding" >&2; exit 1
+          pip install -r client/requirements_client.txt
+          pip install -U pytest pytest-playwright playwright
 
-      - name: Export E2E_API_BASE
-        run: echo "E2E_API_BASE=http://127.0.0.1:8001" >> $GITHUB_ENV
-            - name: Install client deps + pytest
-              run: |
-                pip install -r client/requirements_client.txt
-                pip install -U pytest pytest-playwright playwright
+      - name: Install Playwright browsers (Python)
+        run: |
+          python -m playwright install --with-deps chromium
 
-            - name: Install Playwright browsers (Python)
-              run: |
-                python -m playwright install --with-deps chromium
-
-            - name: Run E2E tests (client)
-              working-directory: client
-              env:
-                PYTHONPATH: ${{ github.workspace }}
-                API_STATIC_KEY: ${{ secrets.API_STATIC_KEY }}
-                E2E_STARTUP_TIMEOUT: "120"
-              run: pytest -q
+      - name: Run E2E tests (client)
+        working-directory: client
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+          API_STATIC_KEY: ${{ secrets.API_STATIC_KEY }}
+          E2E_STARTUP_TIMEOUT: "120"
+        run: pytest -q
 
   build-and-push:
     needs: [tests-api, tests-client-e2e]
