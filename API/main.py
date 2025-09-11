@@ -12,6 +12,9 @@ from sqlalchemy import MetaData, Table, select, outerjoin
 import joblib
 from pathlib import Path
 import mlflow, os, uuid, json, time
+from sqlalchemy.exc import IntegrityError
+import logging
+logger = logging.getLogger(__name__)
 
 MLFLOW_URI = os.getenv("MLFLOW_TRACKING_URI") 
 MLFLOW_EXP = os.getenv("MLFLOW_EXPERIMENT", "reco-inference")
@@ -265,21 +268,44 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
     if hasattr(models.Prediction, "user_id"):
         setattr(pred_row, "user_id", user_id)
 
-    pred_row.items = []
+    # Construire la liste des items prédits
+    items = []
     for r, i in enumerate(sel, start=1):
         etab_id = int(df.iloc[i]["id_etab"]) if "id_etab" in df.columns else int(i)
-        pred_row.items.append(
-            models.PredictionItem(
-                rank=r,
-                etab_id=etab_id,
-                score=float(scores[i]),
-            )
-        )
+        items.append(models.PredictionItem(rank=r, etab_id=etab_id, score=float(scores[i])))
 
+    # ---------- Persistance robuste ----------
     try:
+        # 1) insère la prediction (sans items) pour obtenir un id
         db.add(pred_row)
+        db.flush()  # pred_row.id disponible
+
+        # 2) s'assurer que les etab existent
+        CRUD.ensure_etabs_exist(db, [it.etab_id for it in items])
+
+        # 3) attacher les items et persister
+        pred_row.items = items
+        db.flush()
         db.commit()
         db.refresh(pred_row)
+
+    except IntegrityError as e:
+        # FK etab_id encore manquante ou autre contrainte
+        db.rollback()
+        logger.warning("FK violation lors de l'insertion des items: %s. "
+                    "On sauvegarde la prédiction sans items.", e)
+
+        # Réinsère la prédiction seule (sans items), pour garantir un prediction_id
+        try:
+            pred_row.items = []
+            db.add(pred_row)
+            db.flush()
+            db.commit()
+            db.refresh(pred_row)
+        except Exception as e2:
+            db.rollback()
+            raise HTTPException(500, f"Insertion de la prédiction impossible: {e2}")
+
     except Exception as e:
         db.rollback()
         raise HTTPException(500, f"Insertion de la prédiction impossible: {e}")

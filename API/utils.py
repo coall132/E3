@@ -157,3 +157,4 @@ def to_int_safe(X):
     if isinstance(X, pd.DataFrame):
         return X.fillna(0).astype(np.int32)
     return np.nan_to_num(X, nan=0.0).astype(np.int32)
+

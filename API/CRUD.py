@@ -341,7 +341,7 @@ _OPTION_BOOL_COLS = (
     "servesDinner", "servesLunch",
 )
 
-def _price_to_int_and_symbol(v: Optional[str | int | float]) -> (Optional[int], Optional[str]):
+def _price_to_int_and_symbol(v: Optional[str | int | float]):
     """
     Convertit priceLevel en (niveau_int, symbole €), si possible.
     Accepte déjà un entier/float ou une constante texte PRICE_LEVEL_*.
@@ -488,3 +488,24 @@ def get_etablissements_details_bulk(db: Session, ids: list[int]) -> dict[int, di
             "horaires": _build_horaires(etab.opening_periods or []),
         }
     return out
+
+def ensure_etabs_exist(db: Session, ids: list[int]):
+    """
+    S'assure que chaque id de 'ids' existe dans la table Etab.
+    Crée des lignes minimales si besoin.
+    Adapte les champs si ton modèle a des NOT NULL obligatoires.
+    """
+    if not ids:
+        return
+    ids = [int(x) for x in ids]
+    existing = {
+        x for (x,) in db.query(models.Etab.id)
+                        .filter(models.Etab.id.in_(ids))
+                        .all()
+    }
+    to_add = [i for i in ids if i not in existing]
+    if to_add:
+        # Si ton modèle a des colonnes NOT NULL, mets des valeurs par défaut ici.
+        new_rows = [models.Etab(id=i) for i in to_add]
+        db.bulk_save_objects(new_rows)
+        db.flush()

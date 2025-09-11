@@ -295,48 +295,35 @@ def topk_mean_cosine(mat_or_list, z, k=3):
     idx = np.argpartition(sims, -k)[-k:]
     return float(np.mean(sims[idx]))
 
-def score_text(df, form, model, w_rev=0.5, w_desc=0.5, k=3, missing_cos=0.0):
-    q = (fget(form, 'description', '') or '').strip()
+def score_text(df, form, model, w_rev=0.6, w_desc=0.4, k=3, missing_cos=0.0):
+    q = (form.get("description") or "").strip()
+    N = len(df)
     if not q:
-        return np.ones(len(df), dtype=float)
+        return np.ones(N, dtype=np.float32)
+
     z = model.encode([q], normalize_embeddings=True, show_progress_bar=False)[0].astype(np.float32)
-    N = len(df); out = np.empty(N, dtype=float)
 
-    desc_list = df.get("desc_embed")
-    cos_desc = np.array([
-        float(v @ z) if isinstance(v, np.ndarray) and v.ndim == 1 and v.size > 0 else None
-        for v in (desc_list if desc_list is not None else [None]*N)
-    ], dtype=object)
+    # desc
+    desc_list = df.get("desc_embed", None)
+    cos_desc = np.full(N, missing_cos, dtype=np.float32)
+    if desc_list is not None:
+        for i, v in enumerate(desc_list):
+            if isinstance(v, np.ndarray) and v.ndim == 1 and v.size > 0:
+                cos_desc[i] = _cos01_safe(v, z)
 
-    # marge du top desc
-    if any(c is not None for c in cos_desc):
-        cosd = np.array([(-1.0 if c is None else float(c)) for c in cos_desc], dtype=float)
-        top = int(np.argmax(cosd))
-        margin = float(cosd[top] - np.partition(cosd, -2)[-2]) if len(cosd) >= 2 else 1.0
-    else:
-        margin = 0.0
+    # rev top-k
+    rev_list = df.get("rev_embeds", None)
+    cos_rev = np.full(N, missing_cos, dtype=np.float32)
+    if rev_list is not None:
+        for i, L in enumerate(rev_list):
+            if isinstance(L, list) and len(L) > 0:
+                vals = [_cos01_safe(r, z) for r in L
+                        if isinstance(r, np.ndarray) and r.ndim == 1 and r.size > 0]
+                if vals:
+                    k_ = min(k, len(vals))
+                    cos_rev[i] = float(np.sort(np.asarray(vals, np.float32))[-k_:].mean())
 
-    rev_list = df.get("rev_embeds", [None]*N)
-
-    for i in range(N):
-        cos_r = topk_mean_cosine(rev_list[i], z, k=k) if rev_list is not None else None
-        cos_d = cos_desc[i]
-
-        # si le desc a un gagnant net, on force le desc (w_rev=0)
-        if margin >= 0.10 and cos_d is not None:
-            c = cos_d
-        else:
-            if (cos_d is not None) and (cos_r is not None):
-                c = w_rev*cos_r + (1.0 - w_rev)*cos_d
-            elif cos_r is not None:
-                c = cos_r
-            elif cos_d is not None:
-                c = cos_d
-            else:
-                c = float(missing_cos)
-
-        out[i] = (c + 1.0) / 2.0
-    return out
+    return (w_desc * cos_desc + w_rev * cos_rev).astype(np.float32)
 
 def h_price_vector_simple(df, form):
     lvl_f = fget(form, 'price_level', None)
@@ -1660,8 +1647,8 @@ def main_entrainement():
     summary_to_save.to_csv(outdir / "benchmark_summary.csv", index=True)
     per_query.to_csv(outdir / "benchmark_per_query.csv", index=False)
 
-    preproc_path = outdir / "preproc_items1.joblib"
-    model_path   = outdir / "rank_model1.joblib"
+    preproc_path = outdir / "preproc_items.joblib"
+    model_path   = outdir / "rank_model.joblib"
 
     print(f"[save] preproc -> {preproc_path.resolve()}")
     joblib.dump(preproc, preproc_path, compress=("xz", 3))
