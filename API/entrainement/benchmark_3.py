@@ -626,44 +626,83 @@ def build_pointwise(forms_df, preproc, df, X_items, SENT_MODEL, tau=tau, W=W_pro
     qid = np.concatenate(qid_list)
     return X, y, sw, qid
 
-def build_pairwise(forms_df, preproc, df, X_items, SENT_MODEL, tau=tau, W=W_proxy, top_m=10, bot_m=10):
+def build_pairwise(forms_df, preproc, df, X_items, SENT_MODEL,
+                   tau=tau, W=W_proxy, top_m=10, bot_m=10):
     Xp, yp, wp = [], [], []
 
     for form in _iter_forms(forms_df):
+        # --- Représentation requête ---
         Zf_sp = preproc.transform(form_to_row(form, df))
         Zf = Zf_sp.toarray()[0] if hasattr(Zf_sp, "toarray") else np.asarray(Zf_sp)[0]
 
-        # Non-texte
+        # --- Heuristiques non-texte ---
         H_no_text = {
-            'price':   h_price_vector_simple(df, form),
-            'rating':  h_rating_vector(df),
-            'city':    h_city_vector(df, form),
-            'options': h_opts_vector(df, form),
-            'open':    h_open_vector(df, form, unknown_value=0.5),
+            "price":   h_price_vector_simple(df, form),
+            "rating":  h_rating_vector(df),
+            "city":    h_city_vector(df, form),
+            "options": h_opts_vector(df, form),
+            "open":    h_open_vector(df, form, unknown_value=0.5),
         }
 
-        # Texte
+        # --- Texte ---
         T = text_features01(df, form, SENT_MODEL, k=PROXY_K)
         text_proxy = PROXY_W_REV * T[:, 1] + (1.0 - PROXY_W_REV) * T[:, 0]
 
-        # Gains pour choisir pos/neg
-        H_lbl = {**H_no_text, 'text': text_proxy}
+        # --- Gains pour choisir pos/neg ---
+        H_lbl = {**H_no_text, "text": text_proxy}
         gains = aggregate_gains(H_lbl, W)
+        N = len(gains)
+        if N == 0:
+            continue
 
-        order = np.argsort(gains)
-        pos_idx = order[::-1][:top_m]
-        neg_idx = order[:bot_m]
+        # Tri desc (meilleurs -> pires) et asc (pires -> meilleurs)
+        order_desc = np.argsort(gains)[::-1]
+        order_asc  = order_desc[::-1]
 
-        # Features modèle
+        # Sélections bornées
+        m_pos = min(top_m, N)
+        m_neg = min(bot_m, N)
+
+        pos_idx = order_desc[:m_pos]
+        neg_idx = list(order_asc[:m_neg])
+
+        # --- 1) Assurer disjonction pos/neg ---
+        pos_set = set(pos_idx.tolist() if hasattr(pos_idx, "tolist") else pos_idx)
+        neg_idx = [i for i in neg_idx if i not in pos_set]
+        if not neg_idx:
+            # Prendre les pires restants non chevauchants
+            neg_idx = [i for i in order_asc if i not in pos_set][:m_neg]
+        if not neg_idx:
+            # Rien d’exploitable pour cette requête
+            continue
+
+        # --- Features item + texte (pour chaque item) ---
         Xq = pair_features(Zf, X_items, T)
 
+        # --- 2) Garder seulement delta>0 ; 3) poids non négatifs ---
         for ip in pos_idx:
             for ineg in neg_idx:
+                delta = float(gains[ip] - gains[ineg])
+                if delta <= 0.0:
+                    continue  # on ne garde pas les paires non préférentielles
                 Xp.append(Xq[ip] - Xq[ineg])
                 yp.append(1)
-                wp.append(float(gains[ip] - gains[ineg]))
+                wp.append(delta)
 
-    return np.vstack(Xp).astype(np.float32), np.array(yp), np.array(wp, dtype=float)
+    # --- 4) Sortie propre (types/dtypes) ---
+    if not Xp:
+        # forme vide mais bien typée
+        d = X_items.shape[1] + 2  # pair_features => d+2
+        return (np.zeros((0, d), dtype=np.float32),
+                np.zeros((0,), dtype=np.int32),
+                np.zeros((0,), dtype=np.float32))
+
+    Xp = np.vstack(Xp).astype(np.float32, copy=False)
+    yp = np.ones(len(Xp), dtype=np.int32)  # toutes les paires sont positives
+    wp = np.asarray(wp, dtype=np.float32)
+    wp = np.maximum(wp, 0.0)  # sécurité: jamais de poids négatif
+
+    return Xp, yp, wp
 
 def gains_to_labels_per_query(gains: np.ndarray, q=(0.50, 0.75, 0.90)) -> np.ndarray:
     """
