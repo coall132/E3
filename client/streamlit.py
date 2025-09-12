@@ -6,6 +6,7 @@ import streamlit as st
 from typing import Any, Dict, List, Optional
 import re
 
+
 DEFAULT_API_BASE = os.getenv("API_BASE_URL")
 E2E = os.getenv("E2E","0") == "1"
 
@@ -285,6 +286,7 @@ if submitted:
         with st.spinner(f"Appel /predict… (timeout {to}s)"):
             resp = _api_post(url, json_body=form, headers=_bearer_headers(), params=params, timeout=to)
         st.write("--- DÉBOGAGE : RÉPONSE BRUTE DE L'API ---")
+        print(resp)
         st.json(resp)
         st.session_state["last_prediction"] = resp
         st.success("Prédiction OK")

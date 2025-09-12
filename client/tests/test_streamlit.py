@@ -5,6 +5,7 @@ from contextlib import closing
 import chromium
 import sys
 from pathlib import Path
+from playwright.sync_api import expect
 
 # ---------- Utils ----------
 
@@ -228,7 +229,7 @@ def test_prediction(playwright, live_api, live_streamlit):
     page.get_by_role("button", name="Lancer /predict").click()
     time.sleep(15)
 
-    assert page.get_by_text("prediction_id").is_visible()
+    expect(page.locator('[data-testid="stDataFrame"] >> role=cell').first).to_be_visible()
 
     # 4) /feedback
     page.get_by_role("button", name="Envoyer /feedback").click()
