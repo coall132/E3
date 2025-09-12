@@ -55,6 +55,7 @@ def _wait_http_ok(url, timeout=None):
 def live_api(monkeypatch):
     from API import models
     from API.database import engine, get_db, SessionLocal
+    models.ensure_ml_schema(engine)
     models.Base.metadata.create_all(bind=engine)
 
     db = SessionLocal()
