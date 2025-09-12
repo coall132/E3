@@ -186,6 +186,8 @@ def test_prediction(playwright, live_api, live_streamlit):
 
     # 4) /feedback
     page.get_by_role("button", name="Envoyer /feedback").click()
+    page.get_by_label("rating").click()
+    page.get_by_text("2").click()
     page.get_by_text("Feedback envoyé").wait_for(timeout=15000)
 
     # 5) Déconnexion
