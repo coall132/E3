@@ -116,15 +116,37 @@ def warmup():
     # Mode dev: ne rien charger de lourd
     if os.getenv("DISABLE_WARMUP", "0") == "1":
         app.state.DF_CATALOG = pd.DataFrame({
-            'id_etab': [101, 102, 103, 104],
-            'name': ['Resto de Test A', 'Bistrot Fictif B', 'Pizzeria Mimo C', 'Le Bon Burger'],
-            'city': ['Tours', 'Tours', 'Paris', 'Lyon'],
-            'price_level': [2, 3, 1, 2],
-            'description': ['Une description pour le test A', 'Description pour B', 'italien cosy', 'burger gourmand'],
-            'review_text': ['Super ambiance', 'un peu cher', 'les meilleures pizzas', 'frites maison excellentes'],
-            'delivery': [True, False, True, True],
-            'outdoorSeating': [False, True, False, True]
-        })
+    # --- Colonnes de base venant de 'etab_features' ---
+    'id_etab': [101, 102, 103, 104],
+    'rating': [4.5, 4.0, 3.8, 4.2],
+    'priceLevel': [2, 3, 1, 2],
+    'latitude': [47.38, 47.39, 47.37, 47.40],
+    'longitude': [0.68, 0.69, 0.70, 0.67],
+    'editorialSummary_text': ['Restaurant italien chaleureux', 'Bistrot moderne et animé', 'Pizzeria familiale', 'Les meilleurs burgers de la ville'],
+    'start_price': [15.0, 25.0, 12.0, 10.0],
+    'code_postal': ['37000', '37200', '37000', '37100'],
+
+    # --- Colonnes booléennes venant de 'options_features' ---
+    'allowsDogs': [False, True, True, False],
+    'delivery': [True, False, True, True],
+    'goodForChildren': [True, True, True, True],
+    'goodForGroups': [True, True, True, False],
+    'goodForWatchingSports': [False, True, False, True],
+    'outdoorSeating': [True, True, False, False],
+    'reservable': [True, True, True, False],
+    'restroom': [True, True, True, True],
+    'servesVegetarianFood': [True, True, True, False],
+    'servesBrunch': [False, True, False, False],
+    'servesBreakfast': [False, False, False, False],
+    'servesDinner': [True, True, True, True],
+    'servesLunch': [True, True, True, True],
+
+    # --- Colonnes booléennes venant de 'horaire_features' ---
+    'ouvert_midi_semaine': [True, True, True, True],
+    'ouvert_soir_semaine': [True, True, True, True],
+    'ouvert_midi_weekend': [True, False, True, True],
+    'ouvert_soir_weekend': [True, True, True, False],
+})
         app.state.SENT_MODEL    = utils._StubSentModel()  # stub léger
         app.state.PREPROC       = None
         app.state.ML_MODEL      = None
