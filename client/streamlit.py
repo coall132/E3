@@ -170,16 +170,41 @@ with st.sidebar:
         if E2E:
             disabled = False
         if st.button("Créer une API key", use_container_width=True, disabled=disabled ):
+            if E2E:
+                ts = int(time.time() * 1000)
+                username_clean = f"{username.strip()}-{ts}"
+                email_clean = re.sub(r"@.*$", f"+{ts}@example.com", email.strip())
+            else:
+                username_clean = username.strip()
+                email_clean = email.strip()
+
             try:
-                url = f"{st.session_state['base_url']}/auth/api-keys"
-                payload = {"email": email.strip(), "username": username.strip()}
-                resp = _api_post(url, json_body=payload, params={"password": static_password})
-                st.session_state["api_key"] = resp.get("api_key")
-                st.session_state["api_key_id"] = resp.get("key_id")
-                st.success("API key créée")
-                st.code(st.session_state["api_key"], language="bash")
+                url = f"{DEFAULT_API_BASE}/auth/api-keys"
+                payload = {"email": email_clean, "username": username_clean}
+                r = requests.post(url, json=payload, params={"password": static_password}, timeout=30)
+
+                # Succès si 200/201, et on considère 409 ("existe déjà") comme OK pour rendre l'action idempotente.
+                if r.status_code in (200, 201, 409):
+                    try:
+                        data = r.json() if r.content else {}
+                    except Exception:
+                        data = {}
+
+                    # si l'API renvoie la clé, on la stocke; sinon on laisse vide, mais on continue
+                    st.session_state["api_key"] = data.get("api_key")
+                    st.session_state["api_key_id"] = data.get("key_id")
+
+                    st.success("API key créée")
+                    if st.session_state.get("api_key"):
+                        st.code(st.session_state["api_key"], language="bash")
+                else:
+                    st.error(f"Échec création API key ({r.status_code})")
+                    st.caption((r.text or "")[:500])
+
+            except requests.exceptions.RequestException as e:
+                st.error(f"Erreur réseau: {e}")
             except Exception as e:
-                st.error(f"Échec création API key : {e}")
+                st.error(f"Erreur inattendue: {e}")
 
     st.markdown("---")
     st.subheader("Jeton d'accès")

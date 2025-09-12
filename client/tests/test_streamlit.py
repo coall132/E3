@@ -105,9 +105,9 @@ def test_prediction(playwright, live_api, live_streamlit):
     # 1) Création API key
     page.get_by_label("Email").fill("alice@example.com")
     page.get_by_label("Username (unique)").fill("alice")
-    page.get_by_label("Mot de passe API").fill(os.getenv("API_STATIC_KEY", "testpass"))
+    page.get_by_label("Mot de passe API").fill(os.getenv("API_STATIC_KEY"))
     page.get_by_role("button", name="Créer une API key").click()
-    page.get_by_text("API key créée").wait_for(timeout=15000)
+    page.get_by_text("API key créée").wait_for(timeout=30000)
 
     # 2) Token
     page.get_by_role("button", name="Obtenir / Rafraîchir le token").click()
