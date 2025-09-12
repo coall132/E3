@@ -62,7 +62,7 @@ jobs:
             -p 8000:8000 \
             -e SKIP_RANK_MODEL=1 \
             -e DISABLE_WARMUP=1 \
-            -e API_STATIC_KEY=testpass \
+            -e API_STATIC_KEY=${{ secrets.API_STATIC_KEY }} \
             -e DISABLE_DB_INIT=1 \
             -e DATABASE_URL="sqlite+pysqlite:////tmp/test.db"  \
             api-test
