@@ -70,7 +70,7 @@ def live_api(monkeypatch):
     monkeypatch.setenv("API_STATIC_KEY", "testpass")
     monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:////tmp/test.db")
 
-    config = uvicorn.Config(fastapi_app, host="127.0.0.1", port=api_port, log_level="warning")
+    config = uvicorn.Config(fastapi_app, host="127.0.0.1", port=api_port, log_level="info")
     server = uvicorn.Server(config)
     proc = Process(target=server.run, daemon=True)
     proc.start()
@@ -139,6 +139,8 @@ def live_streamlit(monkeypatch, live_api):
 
 @pytest.mark.e2e
 def test_prediction(playwright, live_api, live_streamlit):
+    results_dir = Path(__file__).parent / "test-results"
+    results_dir.mkdir(exist_ok=True)
     browser = playwright.chromium.launch() 
     page = browser.new_page()
     page.goto(live_streamlit, wait_until="networkidle")
@@ -149,7 +151,14 @@ def test_prediction(playwright, live_api, live_streamlit):
     page.get_by_label("Username (unique)").fill(f"alice-{timestamp}")
     page.get_by_label("Mot de passe API").fill(os.getenv("API_STATIC_KEY"))
     page.get_by_role("button", name="Créer une API key").click()
-    page.get_by_text("API key créée").wait_for(timeout=30000)
+    try:
+        page.get_by_text("API key créée").wait_for(timeout=30000)
+    except Exception as e:
+        screenshot_path = results_dir / "echec-creation-cle.png"
+        page.screenshot(path=screenshot_path)
+        print(f"Screenshot saved to {screenshot_path}")
+        # On relance l'erreur pour que le test soit bien marqué comme échoué
+        raise e
 
     # 2) Token
     page.get_by_role("button", name="Obtenir / Rafraîchir le token").click()

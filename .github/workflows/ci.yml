@@ -95,6 +95,13 @@ jobs:
           DATABASE_URL: "postgresql+psycopg2://testuser:testpassword@127.0.0.1:5432/testdb"
         run: pytest -q client/tests/test_streamlit.py
 
+      - name: Upload screenshot on failure
+        if: failure() # Ne s'exécute que si l'étape précédente a échoué
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshot-on-failure
+          path: client/test-results/ 
+          
   build-and-push:
     needs: [tests-api, tests-client-e2e]
     runs-on: ubuntu-latest
