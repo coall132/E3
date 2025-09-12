@@ -403,6 +403,7 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
         base["message"] = (
             "N’hésitez pas à donner un feedback (0 à 5) via /feedback en utilisant prediction_id."
         )
+        print('_______________________')
         return base
     except Exception as e:
         # Ce bloc attrapera n'importe quel crash et l'affichera

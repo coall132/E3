@@ -458,32 +458,19 @@ def get_etablissements_details_bulk(db: Session, ids: list[int]) -> dict[int, di
     if not ids:
         return {}
 
-    etablissements = db.query(models.Etablissement).filter(models.Etablissement.id_etab.in_(ids)).all()
-    if not etablissements:
-        return {}
-
-    etab_map = {etab.id_etab: etab for etab in etablissements}
-    
-    options_map = {
-        opt.id_etab: opt for opt in 
-        db.query(models.Options).filter(models.Options.id_etab.in_(ids)).all()
-    }
-
-    horaires_list = db.query(models.OpeningPeriod).filter(models.OpeningPeriod.id_etab.in_(ids)).all()
-    horaires_map = {}
-    for h in horaires_list:
-        if h.id_etab not in horaires_map:
-            horaires_map[h.id_etab] = []
-        horaires_map[h.id_etab].append(h)
-
+    rows = (
+        db.query(models.Etablissement)
+        .options(
+            selectinload(models.Etablissement.options),
+            selectinload(models.Etablissement.opening_periods),
+        )
+        .filter(models.Etablissement.id_etab.in_(ids))
+        .all()
+    )
     out = {}
-    for etab_id, etab in etab_map.items():
+    for etab in rows:
         lvl_int, lvl_sym = _price_to_int_and_symbol(etab.priceLevel)
         desc = etab.editorialSummary_text or etab.description
-        
-        etab_options = options_map.get(etab_id)
-        etab_horaires = horaires_map.get(etab_id, [])
-
         out[etab.id_etab] = {
             "id_etab": etab.id_etab,
             "nom": etab.nom,
@@ -497,8 +484,8 @@ def get_etablissements_details_bulk(db: Session, ids: list[int]) -> dict[int, di
             "startPrice": etab.start_price,
             "endPrice": etab.end_price,
             "geo": {"lat": etab.latitude, "lng": etab.longitude},
-            "options_actives": _options_true_list(etab_options),
-            "horaires": _build_horaires(etab_horaires),
+            "options_actives": _options_true_list(etab.options),
+            "horaires": _build_horaires(etab.opening_periods or []),
         }
     return out
 
