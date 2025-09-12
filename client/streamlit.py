@@ -6,7 +6,7 @@ import streamlit as st
 from typing import Any, Dict, List, Optional
 
 DEFAULT_API_BASE = os.getenv("API_BASE_URL")
-E2E = os.getenv("E2E_MODE") == "1"
+E2E = os.getenv("E2E","0") == "1"
 
 st.set_page_config(page_title="Reco Restaurants — Client API", layout="wide")
 st.title("Reco Restaurants — Client Streamlit (API externe)")

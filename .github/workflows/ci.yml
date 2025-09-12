@@ -92,6 +92,7 @@ jobs:
           PYTHONPATH: ${{ github.workspace }}
           API_STATIC_KEY: ${{ secrets.API_STATIC_KEY }}
           E2E_STARTUP_TIMEOUT: "120"
+          E2E: "1"
         run: pytest -q
 
   build-and-push:
