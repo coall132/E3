@@ -28,22 +28,24 @@ def _wait_http_ok(url, timeout=None):
 
 # ---------- Fixtures serveurs ----------
 
-@pytest.fixture(scope="function")   # <-- au lieu de session
+@pytest.fixture(scope="function")
 def live_api(monkeypatch):
     external = os.getenv("E2E_API_BASE")
     if external:
         base_url = external.rstrip("/")
         _wait_http_ok(base_url + "/")
-        return base_url
+        yield base_url
+        return
 
+    # 2) Mode local: spawn uvicorn
     from API.main import app as fastapi_app
     api_port = _free_port()
     base_url = f"http://127.0.0.1:{api_port}"
 
-    # Config API pour tests
     monkeypatch.setenv("DISABLE_WARMUP", "1")
     monkeypatch.setenv("SKIP_RANK_MODEL", "1")
     monkeypatch.setenv("API_STATIC_KEY", "testpass")
+    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:////tmp/test.db")
 
     config = uvicorn.Config(fastapi_app, host="127.0.0.1", port=api_port, log_level="warning")
     server = uvicorn.Server(config)
@@ -57,13 +59,15 @@ def live_api(monkeypatch):
         proc.terminate()
         proc.join(timeout=5)
 
-@pytest.fixture(scope="function")   # <-- idem
-def live_streamlit(live_api):
+
+@pytest.fixture(scope="function")
+def live_streamlit(monkeypatch, live_api):
     external = os.getenv("E2E_CLIENT_BASE")
     if external:
         st_url = external.rstrip("/")
         _wait_http_ok(st_url + "/_stcore/health")
-        return st_url
+        yield st_url
+        return
 
     st_port = _free_port()
     st_url = f"http://127.0.0.1:{st_port}"
@@ -73,7 +77,7 @@ def live_streamlit(live_api):
     env["STREAMLIT_BROWSER_GATHER_USAGE_STATS"] = "false"
 
     cmd = [
-        "streamlit", "run", "client/client_app.py",   # <-- adapte le chemin si besoin
+        "streamlit", "run", "client_app.py",
         "--server.headless=true",
         f"--server.port={st_port}",
         "--browser.serverAddress=127.0.0.1",
