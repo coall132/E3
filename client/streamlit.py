@@ -115,19 +115,6 @@ def _now_ts():
 def _normalize_base(url: str):
     return (url or "").strip().rstrip("/")
 
-def _api_post(url: str, *, json_body: Optional[dict]=None, headers: Optional[dict]=None, params: Optional[dict]=None, timeout: int=30):
-    r = requests.post(url, json=json_body, headers=headers, params=params, timeout=timeout)
-    try:
-        r.raise_for_status()
-    except requests.HTTPError as e:
-        try:
-            payload = r.json()
-        except Exception:
-            payload = {"detail": r.text}
-        msg = payload.get("detail") or payload
-        raise RuntimeError(f"HTTP {r.status_code} — {msg}") from e
-    return r.json()
-
 def _bearer_headers():
     tok = st.session_state.get("access_token")
     return {"Authorization": f"Bearer {tok}"} if tok else {}

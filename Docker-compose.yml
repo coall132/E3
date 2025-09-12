@@ -44,63 +44,48 @@ services:
     networks:
       - data_network
 
+
   mlflow:
     image: python:3.11-slim
     container_name: mlflow
     environment:
-      # --- tracking store (Postgres)
+      # Backend (tracking) : Postgres
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_HOST: postgres
       POSTGRES_PORT: 5432
-      # --- artifacts (MinIO/S3)
-      MLFLOW_S3_ENDPOINT_URL: http://minio:9001
-      AWS_S3_FORCE_PATH_STYLE: "true" 
-      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID}
-      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY}
-      # --- mlflow server config via ENV (utilisées par mlflow.server:app)
       MLFLOW_BACKEND_STORE_URI: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      MLFLOW_ARTIFACTS_DESTINATION: s3://mlflow-artifacts/
+      # Artifacts sur FS local servi par MLflow
+      MLFLOW_ARTIFACTS_DESTINATION: file:///mlruns2
       MLFLOW_SERVE_ARTIFACTS: "true"
-      # (optionnel) éviter que matplotlib écrive dans $HOME
       MPLCONFIGDIR: /tmp
+    volumes:
+      - mlflow_artifacts:/mlruns2
     command: >
       bash -lc "
         set -euo pipefail
         apt-get update &&
         apt-get install -y --no-install-recommends postgresql-client curl &&
         rm -rf /var/lib/apt/lists/* &&
-        pip install --no-cache-dir 'mlflow==2.14.0' gunicorn psycopg2-binary &&
+        pip install --no-cache-dir 'mlflow==2.14.0' psycopg2-binary &&
         echo 'Waiting for Postgres...' &&
         until psql 'postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable' -c 'SELECT 1' >/dev/null 2>&1; do
           echo 'waiting for postgres...'; sleep 2;
         done &&
-        echo 'Waiting for MinIO...' &&
-        until curl -fsS http://minio:9001/minio/health/ready >/dev/null; do
-          echo 'waiting for minio...'; sleep 2;
-        done &&
-        # >>> démarre directement gunicorn sur l'app WSGI de MLflow
-        exec gunicorn --bind 0.0.0.0:5000 --workers 4 mlflow.server:app
+        mlflow server
+          --host 0.0.0.0
+          --port 5000
+          --backend-store-uri ${MLFLOW_BACKEND_STORE_URI}
+          --artifacts-destination ${MLFLOW_ARTIFACTS_DESTINATION}
+          --serve-artifacts
       "
     ports:
-      - "5001:5000"
+      - "5002:5000"
     healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - |
-          import sys, urllib.request
-          try:
-              with urllib.request.urlopen('http://127.0.0.1:5000/', timeout=3) as r:
-                  sys.exit(0 if 200 <= r.getcode() < 400 else 1)
-          except Exception:
-              sys.exit(1)
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if 200<=urllib.request.urlopen('http://127.0.0.1:5000/', timeout=3).getcode()<400 else 1)"]
     restart: unless-stopped
-    networks:
-      - data_network
-
+    networks: [data_network]
 
   monitor:
     image: python:3.11-slim
@@ -140,3 +125,6 @@ services:
 networks:
   data_network:
     external: true
+
+volumes:
+  mlflow_artifacts:
