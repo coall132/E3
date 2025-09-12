@@ -56,6 +56,7 @@ def live_api(monkeypatch):
     external = os.getenv("E2E_API_BASE")
     API_STATIC_KEY = os.getenv("API_STATIC_KEY")
     DATABASE_URL = os.getenv("DATABASE_URL")
+    JWT_SECRET = os.getenv("JWT_SECRET")
     if external:
         base_url = external.rstrip("/")
         _wait_http_ok(base_url + "/")
@@ -71,6 +72,7 @@ def live_api(monkeypatch):
     monkeypatch.setenv("SKIP_RANK_MODEL", "1")
     monkeypatch.setenv("API_STATIC_KEY", API_STATIC_KEY)
     monkeypatch.setenv("DATABASE_URL", DATABASE_URL)
+    monkeypatch.setenv("JWT_SECRET", JWT_SECRET)
 
     config = uvicorn.Config(fastapi_app, host="127.0.0.1", port=api_port, log_level="info")
     server = uvicorn.Server(config)
