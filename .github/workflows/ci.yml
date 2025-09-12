@@ -36,13 +36,16 @@ jobs:
   tests-client-e2e:
     needs: tests-api
     runs-on: ubuntu-latest
+    
     services:
       postgres:
-        image: postgres:13-alpine 
+        image: postgres:13-alpine
         env:
           POSTGRES_USER: testuser
           POSTGRES_PASSWORD: testpassword
           POSTGRES_DB: testdb
+        ports:
+          - 5432:5432
         options: >-
           --health-cmd pg_isready
           --health-interval 10s
@@ -60,53 +63,37 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Cache pip (API)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: pip-api-${{ runner.os }}-${{ hashFiles('API/requirements_dev.txt') }}
+
       - name: Cache pip (client)
         uses: actions/cache@v4
         with:
           path: ~/.cache/pip
           key: pip-client-${{ runner.os }}-${{ hashFiles('client/requirements_client.txt') }}
-      
-      - name: Build API image
-        run: docker build -t api-test -f API/Dockerfile --target dev .
 
-      - name: Run API container
-        run: |
-          docker run -d --rm --name api-test \
-            --network "bridge" \
-            -p 8000:8000 \
-            -e SKIP_RANK_MODEL=1 \
-            -e DISABLE_WARMUP=1 \
-            -e API_STATIC_KEY=${{ secrets.API_STATIC_KEY }} \
-            -e DATABASE_URL="postgresql+psycopg2://testuser:testpassword@postgres:5432/testdb" \
-            api-test
-          for i in {1..40}; do
-            if curl -fsS http://127.0.0.1:8000/ >/dev/null; then
-              echo "API up"; break; fi
-            sleep 2
-            docker logs api-test --tail 80 || true
-            if [ $i -eq 40 ]; then docker logs api-test; exit 1; fi
-          done
-
-      - name: Export E2E_API_BASE
-        run: echo "E2E_API_BASE=http://127.0.0.1:8000" >> $GITHUB_ENV
+      # --- ÉTAPES SIMPLIFIÉES ---
       
-      - name: Install client deps + pytest
+      - name: Install all dependencies (API + Client + Tests)
         run: |
+          pip install -r API/requirements_dev.txt
           pip install -r client/requirements_client.txt
           pip install -U pytest pytest-playwright playwright
 
-      - name: Install Playwright browsers (Python)
-        run: |
-          python -m playwright install --with-deps chromium
+      - name: Install Playwright browsers
+        run: python -m playwright install --with-deps chromium
 
-      - name: Run E2E tests (client)
-        working-directory: client
+      - name: Run E2E tests
         env:
           PYTHONPATH: ${{ github.workspace }}
           API_STATIC_KEY: ${{ secrets.API_STATIC_KEY }}
           E2E_STARTUP_TIMEOUT: "120"
           E2E: "1"
-        run: pytest -q
+          DATABASE_URL: "postgresql+psycopg2://testuser:testpassword@127.0.0.1:5432/testdb"
+        run: pytest -q client/test_streamlit.py
 
   build-and-push:
     needs: [tests-api, tests-client-e2e]
