@@ -225,8 +225,8 @@ def test_prediction(playwright, live_api, live_streamlit):
     page.get_by_text("k (nb de résultats)").click()
     page.keyboard.press("ArrowRight")
     page.get_by_role("button", name="Lancer /predict").click()
-    time.sleep(15)
 
+    expect(page.get_by_text("Appel /predict…")).not_to_be_visible(timeout=60000)
     expect(page.locator('[data-testid="stDataFrame"] >> role=cell').first).to_be_visible()
 
     # 4) /feedback

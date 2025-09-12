@@ -320,7 +320,6 @@ if submitted:
                     "description": _pick_first(d, ["description", "desc"]),
                 }
                 rows.append(row)
-            print('okkkkkkkkkkkkkk')
             if rows:
                 print("nnnnnnnnnnnnnnnnnn")
                 st.dataframe(rows, use_container_width=True, hide_index=True)
