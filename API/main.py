@@ -122,8 +122,6 @@ def warmup():
             'price_level': [2, 3, 1, 2],
             'description': ['Une description pour le test A', 'Description pour B', 'italien cosy', 'burger gourmand'],
             'review_text': ['Super ambiance', 'un peu cher', 'les meilleures pizzas', 'frites maison excellentes'],
-            # Ajoutez ici toute autre colonne utilisée par votre fonction build_item_features_df
-            # Par exemple, si vous avez des booléens pour les options :
             'delivery': [True, False, True, True],
             'outdoorSeating': [False, True, False, True]
         })
@@ -239,21 +237,24 @@ def issue_token(API_key_in: Optional[str] = Security(api_key_header), db: Sessio
     return schema.TokenOut(access_token=token, expires_at=exp_ts)
 
 @app.post("/predict", tags=["predict"], dependencies=[Depends(CRUD.get_current_subject)])
-def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depends(CRUD.current_user_id),db: Session = Depends(get_db)):
+def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depends(CRUD.current_user_id),db: Session = Depends(get_db),):
     t0 = time.perf_counter()
 
-    if (not hasattr(app.state, "DF_CATALOG")) or app.state.DF_CATALOG is None or app.state.DF_CATALOG.empty:
+    # ---------- 0) Préconditions & état appli ----------
+    df_catalog = getattr(app.state, "DF_CATALOG", None)
+    if df_catalog is None or df_catalog.empty:
         raise HTTPException(500, "Catalogue vide/non chargé.")
-    df = app.state.DF_CATALOG
+    df = df_catalog
 
+    sent_model = getattr(app.state, "SENT_MODEL", None)
+    anchors    = getattr(app.state, "ANCHORS", None)
+    model      = getattr(app.state, "ML_MODEL", None)
+    preproc    = getattr(app.state, "PREPROC", None)
+    X_items    = getattr(app.state, "X_ITEMS", None)
+
+    # ---------- 1) Persistance du formulaire ----------
     try:
-        form_row = models.FormDB(
-            price_level=form.price_level,
-            city=form.city,      
-            open=form.open,
-            options=form.options,
-            description=form.description,
-        )
+        form_row = models.FormDB(price_level=form.price_level,city=form.city,open=form.open,options=form.options,description=form.description,)
         db.add(form_row)
         db.flush()
         form_id = form_row.id
@@ -261,24 +262,27 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
         db.rollback()
         raise HTTPException(500, f"Insertion du formulaire impossible: {e}")
 
-    anchors = getattr(app.state, "ANCHORS", None)
-    X_df, gains_proxy = build_item_features_df(df=df,form=form.model_dump(),sent_model=app.state.SENT_MODEL,include_query_consts=True,anchors=anchors,)
+    # ---------- 2) Features items + proxy scores ----------
+    form_dict = form.model_dump()
+    X_df, gains_proxy = build_item_features_df(df=df,form=form_dict,sent_model=sent_model,include_query_consts=True,anchors=anchors,)
 
     used_ml = False
     scores = np.asarray(gains_proxy, dtype=np.float32)
-    model  = getattr(app.state, "ML_MODEL", None)
-    preproc = getattr(app.state, "PREPROC", None)
-    X_items = getattr(app.state, "X_ITEMS", None)
 
+    # ---------- 3) Chemin ML (optionnel) ----------
     if use_ml and (model is not None) and (preproc is not None) and (X_items is not None):
         try:
-            Zf_sp = preproc.transform(form_to_row(form.model_dump(), df))
+            # 3.1 Encodage du formulaire
+            Zf_sp = preproc.transform(form_to_row(form_dict, df))
             Zf = Zf_sp.toarray()[0] if hasattr(Zf_sp, "toarray") else np.asarray(Zf_sp)[0]
 
-            T_feat = text_features01(df, form.model_dump(), app.state.SENT_MODEL, k=PROXY_K_INFER)
+            # 3.2 Features texte (N,2) attendues par pair_features
+            T_feat = text_features01(df, form_dict, sent_model, k=PROXY_K_INFER)
 
+            # 3.3 Features finales requises par le modèle
             Xq = pair_features(Zf, X_items, T_feat, diff_scale=DIFF_SCALE)
 
+            # 3.4 Prédiction
             scores = utils._predict_scores(model, Xq)
             used_ml = True
 
@@ -286,35 +290,35 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
             print(f"[predict] chemin ML en échec, fallback proxy: {e}")
             used_ml = False
 
+    # ---------- 4) Sélection top-k ----------
     k = int(max(1, min(k or 10, 50)))
     order = np.argsort(scores)[::-1]
     sel = order[:k]
 
+    # ---------- 5) Métadonnées ----------
     latency_ms = int((time.perf_counter() - t0) * 1000)
-    model_version = os.getenv("MODEL_VERSION") or getattr(app.state, "MODEL_VERSION", None) or "dev"
+    model_version = (os.getenv("MODEL_VERSION")or getattr(app.state, "MODEL_VERSION", None)or "dev")
 
-    pred_row = models.Prediction(
-        form_id=form_id,
-        k=k,
-        model_version=model_version,
-        latency_ms=latency_ms,
-        status="ok"
-    )
+    # ---------- 6) Construction Prediction + items ----------
+    pred_row = models.Prediction(form_id=form_id,k=k,model_version=model_version,latency_ms=latency_ms,status="ok",)
     if hasattr(models.Prediction, "user_id"):
         setattr(pred_row, "user_id", user_id)
 
     items = []
-    for r, i in enumerate(sel, start=1):
-        etab_id = int(df.iloc[i]["id_etab"]) if "id_etab" in df.columns else int(i)
-        items.append(models.PredictionItem(rank=r, etab_id=etab_id, score=float(scores[i])))
+    for rank, idx in enumerate(sel, start=1):
+        etab_id = int(df.iloc[idx]["id_etab"]) if "id_etab" in df.columns else int(idx)
+        items.append(
+            models.PredictionItem(rank=rank,etab_id=etab_id,score=float(scores[idx]),))
 
-    # ---------- Persistance robuste ----------
+    # ---------- 7) Persistance robuste ----------
     try:
         db.add(pred_row)
-        db.flush() 
+        db.flush()  # avoir l'id de la prédiction
 
+        # S'assurer que les établissements référencés existent (FK)
         CRUD.ensure_etabs_exist(db, [it.etab_id for it in items])
 
+        # Lier et sauvegarder les items
         pred_row.items = items
         db.flush()
         db.commit()
@@ -322,9 +326,7 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
 
     except IntegrityError as e:
         db.rollback()
-        logger.warning("FK violation lors de l'insertion des items: %s. "
-                    "On sauvegarde la prédiction sans items.", e)
-
+        logger.warning("FK violation lors de l'insertion des items: %s. ""On sauvegarde la prédiction sans items.",e,)
         try:
             pred_row.items = []
             db.add(pred_row)
@@ -339,19 +341,14 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
         db.rollback()
         raise HTTPException(500, f"Insertion de la prédiction impossible: {e}")
 
+    # ---------- 8) Logging MLflow (best-effort) ----------
     try:
         pyd_pred = schema.Prediction.model_validate(pred_row)
-        CRUD.log_prediction_event(
-            prediction=pyd_pred,
-            form_dict=form.model_dump(),
-            scores=np.asarray(scores, dtype=float),
-            used_ml=used_ml,
-            latency_ms=latency_ms,
-            model_version=model_version,
-        )
+        CRUD.log_prediction_event(prediction=pyd_pred,form_dict=form_dict,scores=np.asarray(scores, dtype=float),used_ml=used_ml,latency_ms=latency_ms,model_version=model_version,)
     except Exception as e:
         print(f"[mlflow] log_prediction_event failed: {e}")
 
+    # ---------- 9) Réponse enrichie ----------
     base = schema.Prediction.model_validate(pred_row).model_dump()
     pred_id = str(pred_row.id)
     base.setdefault("id", pred_id)
@@ -366,7 +363,9 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
         items_rich.append({**it, "details": d})
 
     base["items_rich"] = items_rich
-    base["message"] = "N’hésitez pas à donner un feedback (0 à 5) via /feedback en utilisant prediction_id."
+    base["message"] = (
+        "N’hésitez pas à donner un feedback (0 à 5) via /feedback en utilisant prediction_id."
+    )
     return base
 
 

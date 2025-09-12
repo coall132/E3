@@ -171,7 +171,7 @@ def test_prediction(playwright, live_api, live_streamlit):
 
     # 3) /predict
     page.get_by_label("Gamme de prix").click()
-    page.get_by_text("2").click()
+    page.get_by_role("option", name="2").click()
     page.get_by_label("Ville").fill("Tours")
     page.get_by_label("Ouverture").fill("ouvert maintenant")
     page.get_by_label("Options disponibles").click()
