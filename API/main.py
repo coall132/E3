@@ -13,6 +13,7 @@ import joblib
 from pathlib import Path
 import mlflow, os, uuid, json, time
 from sqlalchemy.exc import IntegrityError
+import traceback
 import logging
 logger = logging.getLogger(__name__)
 
@@ -116,37 +117,37 @@ def warmup():
     # Mode dev: ne rien charger de lourd
     if os.getenv("DISABLE_WARMUP", "0") == "1":
         app.state.DF_CATALOG = pd.DataFrame({
-    # --- Colonnes de base venant de 'etab_features' ---
-    'id_etab': [101, 102, 103, 104],
-    'rating': [4.5, 4.0, 3.8, 4.2],
-    'priceLevel': [2, 3, 1, 2],
-    'latitude': [47.38, 47.39, 47.37, 47.40],
-    'longitude': [0.68, 0.69, 0.70, 0.67],
-    'editorialSummary_text': ['Restaurant italien chaleureux', 'Bistrot moderne et animé', 'Pizzeria familiale', 'Les meilleurs burgers de la ville'],
-    'start_price': [15.0, 25.0, 12.0, 10.0],
-    'code_postal': ['37000', '37200', '37000', '37100'],
+            # --- Colonnes de base venant de 'etab_features' ---
+            'id_etab': [101, 102, 103, 104],
+            'rating': [4.5, 4.0, 3.8, 4.2],
+            'priceLevel': [2, 3, 1, 2],
+            'latitude': [47.38, 47.39, 47.37, 47.40],
+            'longitude': [0.68, 0.69, 0.70, 0.67],
+            'editorialSummary_text': ['Restaurant italien chaleureux', 'Bistrot moderne et animé', 'Pizzeria familiale', 'Les meilleurs burgers de la ville'],
+            'start_price': [15.0, 25.0, 12.0, 10.0],
+            'code_postal': ['37000', '37200', '37000', '37100'],
 
-    # --- Colonnes booléennes venant de 'options_features' ---
-    'allowsDogs': [False, True, True, False],
-    'delivery': [True, False, True, True],
-    'goodForChildren': [True, True, True, True],
-    'goodForGroups': [True, True, True, False],
-    'goodForWatchingSports': [False, True, False, True],
-    'outdoorSeating': [True, True, False, False],
-    'reservable': [True, True, True, False],
-    'restroom': [True, True, True, True],
-    'servesVegetarianFood': [True, True, True, False],
-    'servesBrunch': [False, True, False, False],
-    'servesBreakfast': [False, False, False, False],
-    'servesDinner': [True, True, True, True],
-    'servesLunch': [True, True, True, True],
+            # --- Colonnes booléennes venant de 'options_features' ---
+            'allowsDogs': [False, True, True, False],
+            'delivery': [True, False, True, True],
+            'goodForChildren': [True, True, True, True],
+            'goodForGroups': [True, True, True, False],
+            'goodForWatchingSports': [False, True, False, True],
+            'outdoorSeating': [True, True, False, False],
+            'reservable': [True, True, True, False],
+            'restroom': [True, True, True, True],
+            'servesVegetarianFood': [True, True, True, False],
+            'servesBrunch': [False, True, False, False],
+            'servesBreakfast': [False, False, False, False],
+            'servesDinner': [True, True, True, True],
+            'servesLunch': [True, True, True, True],
 
-    # --- Colonnes booléennes venant de 'horaire_features' ---
-    'ouvert_midi_semaine': [True, True, True, True],
-    'ouvert_soir_semaine': [True, True, True, True],
-    'ouvert_midi_weekend': [True, False, True, True],
-    'ouvert_soir_weekend': [True, True, True, False],
-})
+            # --- Colonnes booléennes venant de 'horaire_features' ---
+            'ouvert_midi_semaine': [True, True, True, True],
+            'ouvert_soir_semaine': [True, True, True, True],
+            'ouvert_midi_weekend': [True, False, True, True],
+            'ouvert_soir_weekend': [True, True, True, False],
+        })
         app.state.SENT_MODEL    = utils._StubSentModel()  # stub léger
         app.state.PREPROC       = None
         app.state.ML_MODEL      = None
@@ -260,135 +261,143 @@ def issue_token(API_key_in: Optional[str] = Security(api_key_header), db: Sessio
 
 @app.post("/predict", tags=["predict"], dependencies=[Depends(CRUD.get_current_subject)])
 def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depends(CRUD.current_user_id),db: Session = Depends(get_db),):
-    t0 = time.perf_counter()
+    try : 
+        t0 = time.perf_counter()
 
-    # ---------- 0) Préconditions & état appli ----------
-    df_catalog = getattr(app.state, "DF_CATALOG", None)
-    if df_catalog is None or df_catalog.empty:
-        raise HTTPException(500, "Catalogue vide/non chargé.")
-    df = df_catalog
+        # ---------- 0) Préconditions & état appli ----------
+        df_catalog = getattr(app.state, "DF_CATALOG", None)
+        if df_catalog is None or df_catalog.empty:
+            raise HTTPException(500, "Catalogue vide/non chargé.")
+        df = df_catalog
 
-    sent_model = getattr(app.state, "SENT_MODEL", None)
-    anchors    = getattr(app.state, "ANCHORS", None)
-    model      = getattr(app.state, "ML_MODEL", None)
-    preproc    = getattr(app.state, "PREPROC", None)
-    X_items    = getattr(app.state, "X_ITEMS", None)
+        sent_model = getattr(app.state, "SENT_MODEL", None)
+        anchors    = getattr(app.state, "ANCHORS", None)
+        model      = getattr(app.state, "ML_MODEL", None)
+        preproc    = getattr(app.state, "PREPROC", None)
+        X_items    = getattr(app.state, "X_ITEMS", None)
 
-    # ---------- 1) Persistance du formulaire ----------
-    try:
-        form_row = models.FormDB(price_level=form.price_level,city=form.city,open=form.open,options=form.options,description=form.description,)
-        db.add(form_row)
-        db.flush()
-        form_id = form_row.id
-    except Exception as e:
-        db.rollback()
-        raise HTTPException(500, f"Insertion du formulaire impossible: {e}")
-
-    # ---------- 2) Features items + proxy scores ----------
-    form_dict = form.model_dump()
-    X_df, gains_proxy = build_item_features_df(df=df,form=form_dict,sent_model=sent_model,include_query_consts=True,anchors=anchors,)
-
-    used_ml = False
-    scores = np.asarray(gains_proxy, dtype=np.float32)
-
-    # ---------- 3) Chemin ML (optionnel) ----------
-    if use_ml and (model is not None) and (preproc is not None) and (X_items is not None):
+        # ---------- 1) Persistance du formulaire ----------
         try:
-            # 3.1 Encodage du formulaire
-            Zf_sp = preproc.transform(form_to_row(form_dict, df))
-            Zf = Zf_sp.toarray()[0] if hasattr(Zf_sp, "toarray") else np.asarray(Zf_sp)[0]
-
-            # 3.2 Features texte (N,2) attendues par pair_features
-            T_feat = text_features01(df, form_dict, sent_model, k=PROXY_K_INFER)
-
-            # 3.3 Features finales requises par le modèle
-            Xq = pair_features(Zf, X_items, T_feat, diff_scale=DIFF_SCALE)
-
-            # 3.4 Prédiction
-            scores = utils._predict_scores(model, Xq)
-            used_ml = True
-
+            form_row = models.FormDB(price_level=form.price_level,city=form.city,open=form.open,options=form.options,description=form.description,)
+            db.add(form_row)
+            db.flush()
+            form_id = form_row.id
         except Exception as e:
-            print(f"[predict] chemin ML en échec, fallback proxy: {e}")
-            used_ml = False
+            db.rollback()
+            raise HTTPException(500, f"Insertion du formulaire impossible: {e}")
 
-    # ---------- 4) Sélection top-k ----------
-    k = int(max(1, min(k or 10, 50)))
-    order = np.argsort(scores)[::-1]
-    sel = order[:k]
+        # ---------- 2) Features items + proxy scores ----------
+        form_dict = form.model_dump()
+        X_df, gains_proxy = build_item_features_df(df=df,form=form_dict,sent_model=sent_model,include_query_consts=True,anchors=anchors,)
 
-    # ---------- 5) Métadonnées ----------
-    latency_ms = int((time.perf_counter() - t0) * 1000)
-    model_version = (os.getenv("MODEL_VERSION")or getattr(app.state, "MODEL_VERSION", None)or "dev")
+        used_ml = False
+        scores = np.asarray(gains_proxy, dtype=np.float32)
 
-    # ---------- 6) Construction Prediction + items ----------
-    pred_row = models.Prediction(form_id=form_id,k=k,model_version=model_version,latency_ms=latency_ms,status="ok",)
-    if hasattr(models.Prediction, "user_id"):
-        setattr(pred_row, "user_id", user_id)
+        # ---------- 3) Chemin ML (optionnel) ----------
+        if use_ml and (model is not None) and (preproc is not None) and (X_items is not None):
+            try:
+                # 3.1 Encodage du formulaire
+                Zf_sp = preproc.transform(form_to_row(form_dict, df))
+                Zf = Zf_sp.toarray()[0] if hasattr(Zf_sp, "toarray") else np.asarray(Zf_sp)[0]
 
-    items = []
-    for rank, idx in enumerate(sel, start=1):
-        etab_id = int(df.iloc[idx]["id_etab"]) if "id_etab" in df.columns else int(idx)
-        items.append(
-            models.PredictionItem(rank=rank,etab_id=etab_id,score=float(scores[idx]),))
+                # 3.2 Features texte (N,2) attendues par pair_features
+                T_feat = text_features01(df, form_dict, sent_model, k=PROXY_K_INFER)
 
-    # ---------- 7) Persistance robuste ----------
-    try:
-        db.add(pred_row)
-        db.flush()  # avoir l'id de la prédiction
+                # 3.3 Features finales requises par le modèle
+                Xq = pair_features(Zf, X_items, T_feat, diff_scale=DIFF_SCALE)
 
-        # S'assurer que les établissements référencés existent (FK)
-        CRUD.ensure_etabs_exist(db, [it.etab_id for it in items])
+                # 3.4 Prédiction
+                scores = utils._predict_scores(model, Xq)
+                used_ml = True
 
-        # Lier et sauvegarder les items
-        pred_row.items = items
-        db.flush()
-        db.commit()
-        db.refresh(pred_row)
+            except Exception as e:
+                print(f"[predict] chemin ML en échec, fallback proxy: {e}")
+                used_ml = False
 
-    except IntegrityError as e:
-        db.rollback()
-        logger.warning("FK violation lors de l'insertion des items: %s. ""On sauvegarde la prédiction sans items.",e,)
+        # ---------- 4) Sélection top-k ----------
+        k = int(max(1, min(k or 10, 50)))
+        order = np.argsort(scores)[::-1]
+        sel = order[:k]
+
+        # ---------- 5) Métadonnées ----------
+        latency_ms = int((time.perf_counter() - t0) * 1000)
+        model_version = (os.getenv("MODEL_VERSION")or getattr(app.state, "MODEL_VERSION", None)or "dev")
+
+        # ---------- 6) Construction Prediction + items ----------
+        pred_row = models.Prediction(form_id=form_id,k=k,model_version=model_version,latency_ms=latency_ms,status="ok",)
+        if hasattr(models.Prediction, "user_id"):
+            setattr(pred_row, "user_id", user_id)
+
+        items = []
+        for rank, idx in enumerate(sel, start=1):
+            etab_id = int(df.iloc[idx]["id_etab"]) if "id_etab" in df.columns else int(idx)
+            items.append(
+                models.PredictionItem(rank=rank,etab_id=etab_id,score=float(scores[idx]),))
+
+        # ---------- 7) Persistance robuste ----------
         try:
-            pred_row.items = []
             db.add(pred_row)
+            db.flush()  # avoir l'id de la prédiction
+
+            # S'assurer que les établissements référencés existent (FK)
+            CRUD.ensure_etabs_exist(db, [it.etab_id for it in items])
+
+            # Lier et sauvegarder les items
+            pred_row.items = items
             db.flush()
             db.commit()
             db.refresh(pred_row)
-        except Exception as e2:
+
+        except IntegrityError as e:
             db.rollback()
-            raise HTTPException(500, f"Insertion de la prédiction impossible: {e2}")
+            logger.warning("FK violation lors de l'insertion des items: %s. ""On sauvegarde la prédiction sans items.",e,)
+            try:
+                pred_row.items = []
+                db.add(pred_row)
+                db.flush()
+                db.commit()
+                db.refresh(pred_row)
+            except Exception as e2:
+                db.rollback()
+                raise HTTPException(500, f"Insertion de la prédiction impossible: {e2}")
 
+        except Exception as e:
+            db.rollback()
+            raise HTTPException(500, f"Insertion de la prédiction impossible: {e}")
+
+        # ---------- 8) Logging MLflow (best-effort) ----------
+        try:
+            pyd_pred = schema.Prediction.model_validate(pred_row)
+            CRUD.log_prediction_event(prediction=pyd_pred,form_dict=form_dict,scores=np.asarray(scores, dtype=float),used_ml=used_ml,latency_ms=latency_ms,model_version=model_version,)
+        except Exception as e:
+            print(f"[mlflow] log_prediction_event failed: {e}")
+
+        # ---------- 9) Réponse enrichie ----------
+        base = schema.Prediction.model_validate(pred_row).model_dump()
+        pred_id = str(pred_row.id)
+        base.setdefault("id", pred_id)
+        base["prediction_id"] = pred_id
+
+        ids = [int(it["etab_id"]) for it in base.get("items", [])]
+        details_map = CRUD.get_etablissements_details_bulk(db, ids)
+
+        items_rich = []
+        for it in base.get("items", []):
+            d = details_map.get(int(it["etab_id"]))
+            items_rich.append({**it, "details": d})
+
+        base["items_rich"] = items_rich
+        base["message"] = (
+            "N’hésitez pas à donner un feedback (0 à 5) via /feedback en utilisant prediction_id."
+        )
+        return base
     except Exception as e:
-        db.rollback()
-        raise HTTPException(500, f"Insertion de la prédiction impossible: {e}")
-
-    # ---------- 8) Logging MLflow (best-effort) ----------
-    try:
-        pyd_pred = schema.Prediction.model_validate(pred_row)
-        CRUD.log_prediction_event(prediction=pyd_pred,form_dict=form_dict,scores=np.asarray(scores, dtype=float),used_ml=used_ml,latency_ms=latency_ms,model_version=model_version,)
-    except Exception as e:
-        print(f"[mlflow] log_prediction_event failed: {e}")
-
-    # ---------- 9) Réponse enrichie ----------
-    base = schema.Prediction.model_validate(pred_row).model_dump()
-    pred_id = str(pred_row.id)
-    base.setdefault("id", pred_id)
-    base["prediction_id"] = pred_id
-
-    ids = [int(it["etab_id"]) for it in base.get("items", [])]
-    details_map = CRUD.get_etablissements_details_bulk(db, ids)
-
-    items_rich = []
-    for it in base.get("items", []):
-        d = details_map.get(int(it["etab_id"]))
-        items_rich.append({**it, "details": d})
-
-    base["items_rich"] = items_rich
-    base["message"] = (
-        "N’hésitez pas à donner un feedback (0 à 5) via /feedback en utilisant prediction_id."
-    )
-    return base
+        # Ce bloc attrapera n'importe quel crash et l'affichera
+        print("\n---! ERREUR DANS L'ENDPOINT /predict !---", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
+        print("-----------------------------------------\n", file=sys.stderr)
+        
+        raise HTTPException(status_code=500, detail=f"Internal Server Error: {e}")
 
 
 
