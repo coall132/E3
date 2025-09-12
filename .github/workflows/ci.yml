@@ -87,13 +87,14 @@ jobs:
         run: python -m playwright install --with-deps chromium
 
       - name: Run E2E tests
+        working-directory: client
         env:
           PYTHONPATH: ${{ github.workspace }}
           API_STATIC_KEY: ${{ secrets.API_STATIC_KEY }}
           E2E_STARTUP_TIMEOUT: "120"
           E2E: "1"
           DATABASE_URL: "postgresql+psycopg2://testuser:testpassword@127.0.0.1:5432/testdb"
-        run: pytest -q client/test_streamlit.py
+        run: pytest -q test_streamlit.py
 
   build-and-push:
     needs: [tests-api, tests-client-e2e]
