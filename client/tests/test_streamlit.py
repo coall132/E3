@@ -104,7 +104,7 @@ def live_api(monkeypatch):
     JWT_SECRET = os.getenv("JWT_SECRET")
     E2E = os.getenv("E2E","1")=="1"
     if external:
-        base_url = external.rstrip("/")
+        base_url = external.rstrip("/") 
         _wait_http_ok(base_url + "/")
         yield base_url
         return
