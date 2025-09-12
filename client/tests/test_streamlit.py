@@ -4,6 +4,7 @@ from multiprocessing import Process
 from contextlib import closing
 import chromium
 import sys
+import Path
 
 # ---------- Utils ----------
 
@@ -97,9 +98,11 @@ def live_streamlit(monkeypatch, live_api):
     env = os.environ.copy()
     env["API_BASE_URL"] = live_api
     env["STREAMLIT_BROWSER_GATHER_USAGE_STATS"] = "false"
+    client_root = Path(__file__).parent.parent 
+    streamlit_script_path = client_root / "streamlit.py"
 
     cmd = [
-        "streamlit", "run", "client/streamlit.py",
+        "streamlit", "run",  str(streamlit_script_path),
         "--server.headless=true",
         f"--server.port={st_port}",
         "--browser.serverAddress=127.0.0.1",
