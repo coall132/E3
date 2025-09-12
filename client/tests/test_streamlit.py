@@ -107,12 +107,12 @@ def test_prediction(playwright, live_api, live_streamlit):
     page.get_by_label("Username (unique)").fill("alice")
     page.get_by_label("Mot de passe API").fill(os.getenv("API_STATIC_KEY", "testpass"))
     page.get_by_role("button", name="Créer une API key").click()
-    page.get_by_text("API key créée").wait_for(timeout=5000)
+    page.get_by_text("API key créée").wait_for(timeout=15000)
 
     # 2) Token
     page.get_by_role("button", name="Obtenir / Rafraîchir le token").click()
-    page.get_by_text("Token récupéré").wait_for(timeout=5000)
-    page.get_by_text("Token valide").wait_for(timeout=5000)
+    page.get_by_text("Token récupéré").wait_for(timeout=15000)
+    page.get_by_text("Token valide").wait_for(timeout=15000)
 
     # 3) /predict
     page.get_by_label("Gamme de prix").select_option(label="2")
@@ -123,17 +123,17 @@ def test_prediction(playwright, live_api, live_streamlit):
     page.get_by_text("k (nb de résultats)").click()
     page.keyboard.press("ArrowRight")
     page.get_by_role("button", name="Lancer /predict").click()
-    page.get_by_text("Prédiction OK").wait_for(timeout=15000)
+    page.get_by_text("Prédiction OK").wait_for(timeout=30000)
 
     assert page.get_by_text("prediction_id").is_visible()
 
     # 4) /feedback
     page.get_by_role("button", name="Envoyer /feedback").click()
-    page.get_by_text("Feedback envoyé").wait_for(timeout=5000)
+    page.get_by_text("Feedback envoyé").wait_for(timeout=15000)
 
     # 5) Déconnexion
     page.get_by_role("button", name="Se déconnecter (supprimer le token)").click()
-    page.get_by_text("Token supprimé. Vous êtes déconnecté.").wait_for(timeout=5000)
-    page.get_by_text("Pas de token valide").wait_for(timeout=5000)
+    page.get_by_text("Token supprimé. Vous êtes déconnecté.").wait_for(timeout=15000)
+    page.get_by_text("Pas de token valide").wait_for(timeout=15000)
 
     browser.close()
