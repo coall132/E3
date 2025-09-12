@@ -71,7 +71,9 @@ jobs:
 
       - name: Run API container
         run: |
+          JOB_NETWORK="bridge"
           docker run -d --rm --name api-test \
+            --network "$JOB_NETWORK"
             -p 8000:8000 \
             -e SKIP_RANK_MODEL=1 \
             -e DISABLE_WARMUP=1 \
