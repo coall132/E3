@@ -53,6 +53,49 @@ def _wait_http_ok(url, timeout=None):
 
 @pytest.fixture(scope="function")
 def live_api(monkeypatch):
+    from API import models
+    from API.database import engine, get_db, SessionLocal
+    models.Base.metadata.create_all(bind=engine)
+
+    db = SessionLocal()
+    try:
+        etablissements = [
+            models.Etablissement(
+                id_etab=101, nom='Resto de Test A (Terrasse & Livraison)', adresse='1 Rue du Test, 37000 Tours',
+                internationalPhoneNumber='+33 1 23 45 67 89', websiteUri='http://resto-a.test',
+                rating=4.5, priceLevel='PRICE_LEVEL_MODERATE', start_price=15.0, end_price=30.0,
+                latitude=47.38, longitude=0.68, editorialSummary_text='Un bon resto italien.'
+            ),
+            models.Etablissement(
+                id_etab=102, nom='Bistrot Fictif B', adresse='2 Avenue de la Fiction, 37200 Tours',
+                rating=4.0, priceLevel='PRICE_LEVEL_EXPENSIVE'
+            ),
+        ]
+
+        options = [
+            models.Options(
+                id_etab=101, delivery=True, outdoorSeating=True,
+                reservable=True, restroom=True, servesDinner=True, servesLunch=True
+            ),
+            models.Options(
+                id_etab=102, delivery=False, outdoorSeating=False,
+                reservable=True, restroom=True, servesDinner=True, servesLunch=True
+            ),
+        ]
+
+        horaires = [
+            models.OpeningPeriod(id_etab=101, open_day=1, open_time='1200', close_day=1, close_time='1400'),
+            models.OpeningPeriod(id_etab=101, open_day=1, open_time='1900', close_day=1, close_time='2200'), 
+        ]
+
+        objets_de_test = etablissements + options + horaires
+        db.add_all(objets_de_test)
+        db.commit()
+        print(f"\n--- {len(objets_de_test)} objets de test insérés en BDD ---")
+
+    finally:
+        db.close()
+
     external = os.getenv("E2E_API_BASE")
     API_STATIC_KEY = os.getenv("API_STATIC_KEY")
     DATABASE_URL = os.getenv("DATABASE_URL")
@@ -182,7 +225,7 @@ def test_prediction(playwright, live_api, live_streamlit):
     page.get_by_text("k (nb de résultats)").click()
     page.keyboard.press("ArrowRight")
     page.get_by_role("button", name="Lancer /predict").click()
-    page.get_by_text("Prédiction OK").wait_for(timeout=60000)
+    page.get_by_text("Prédiction OK").wait_for(timeout=15000)
 
     assert page.get_by_text("prediction_id").is_visible()
 
