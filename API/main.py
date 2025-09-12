@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 MLFLOW_URI = os.getenv("MLFLOW_TRACKING_URI") 
 MLFLOW_EXP = os.getenv("MLFLOW_EXPERIMENT", "reco-inference")
+E2E = os.getenv("E2E", "0")=="1"
 PROXY_K_INFER = 2          
 DIFF_SCALE = 0.05 
 
@@ -376,9 +377,11 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
         print("--- /predict: 7. Prédiction sauvegardée ---")
 
         # ---------- 8) Logging MLflow (best-effort) ----------
+
         try:
-            pyd_pred = schema.Prediction.model_validate(pred_row)
-            CRUD.log_prediction_event(prediction=pyd_pred,form_dict=form_dict,scores=np.asarray(scores, dtype=float),used_ml=used_ml,latency_ms=latency_ms,model_version=model_version,)
+            if not E2E:
+                pyd_pred = schema.Prediction.model_validate(pred_row)
+                CRUD.log_prediction_event(prediction=pyd_pred,form_dict=form_dict,scores=np.asarray(scores, dtype=float),used_ml=used_ml,latency_ms=latency_ms,model_version=model_version,)
         except Exception as e:
             print(f"[mlflow] log_prediction_event failed: {e}")
 

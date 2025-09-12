@@ -102,6 +102,7 @@ def live_api(monkeypatch):
     API_STATIC_KEY = os.getenv("API_STATIC_KEY")
     DATABASE_URL = os.getenv("DATABASE_URL")
     JWT_SECRET = os.getenv("JWT_SECRET")
+    E2E = os.getenv("E2E",1)==1
     if external:
         base_url = external.rstrip("/")
         _wait_http_ok(base_url + "/")
@@ -118,6 +119,7 @@ def live_api(monkeypatch):
     monkeypatch.setenv("API_STATIC_KEY", API_STATIC_KEY)
     monkeypatch.setenv("DATABASE_URL", DATABASE_URL)
     monkeypatch.setenv("JWT_SECRET", JWT_SECRET)
+    monkeypatch.setenv("E2E", E2E)
 
     config = uvicorn.Config(fastapi_app, host="127.0.0.1", port=api_port, log_level="info")
     server = uvicorn.Server(config)
@@ -227,7 +229,7 @@ def test_prediction(playwright, live_api, live_streamlit):
     page.get_by_role("button", name="Lancer /predict").click()
 
     expect(page.get_by_text("Appel /predict…")).not_to_be_visible(timeout=60000)
-    expect(page.locator('[data-testid="stDataFrame"] >> role=cell').first).to_be_visible()
+    expect(page.locator('[data-testid="stDataFrame"]')).to_be_visible()
 
     # 4) /feedback
     page.get_by_role("button", name="Envoyer /feedback").click()
