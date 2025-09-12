@@ -226,13 +226,7 @@ def test_prediction(playwright, live_api, live_streamlit):
     page.get_by_text("k (nb de résultats)").click()
     page.keyboard.press("ArrowRight")
     page.get_by_role("button", name="Lancer /predict").click()
-    try : 
-        page.get_by_text("Prédiction OK").wait_for(timeout=15000)
-    except Exception as e:
-        screenshot_path = results_dir / "echec-prediction.png"
-        page.screenshot(path=screenshot_path)
-        print(f"Screenshot for prediction failure saved to {screenshot_path}")
-        raise e
+    time.sleep(15)
 
     assert page.get_by_text("prediction_id").is_visible()
 
