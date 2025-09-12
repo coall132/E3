@@ -170,10 +170,12 @@ def test_prediction(playwright, live_api, live_streamlit):
     page.get_by_text("Token valide").wait_for(timeout=15000)
 
     # 3) /predict
-    page.get_by_label("Gamme de prix").select_option(label="2")
+    page.get_by_label("Gamme de prix").click()
+    page.get_by_text("2").click()
     page.get_by_label("Ville").fill("Tours")
     page.get_by_label("Ouverture").fill("ouvert maintenant")
-    page.get_by_label("Options").fill("terrasse,wifi")
+    page.get_by_label("Options").click()
+    page.get_by_text("Livraison").click()
     page.get_by_label("Description").fill("italien cosy, budget moyen")
     page.get_by_text("k (nb de résultats)").click()
     page.keyboard.press("ArrowRight")
