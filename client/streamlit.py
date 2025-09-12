@@ -284,6 +284,8 @@ if submitted:
         to = st.session_state.get("http_timeout", DEFAULT_HTTP_TIMEOUT)
         with st.spinner(f"Appel /predict… (timeout {to}s)"):
             resp = _api_post(url, json_body=form, headers=_bearer_headers(), params=params, timeout=to)
+        st.write("--- DÉBOGAGE : RÉPONSE BRUTE DE L'API ---")
+        st.json(resp)
         st.session_state["last_prediction"] = resp
         st.success("Prédiction OK")
 
