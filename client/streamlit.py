@@ -313,7 +313,7 @@ if submitted:
                     "score": it.get("score"),
                     "id_etab": it.get("etab_id"),
                     "name": _pick_first(d, ["name", "nom", "title", "libelle"]),
-                    "city": _pick_first(d, ['adresse',"code_postal", "cp"]),
+                    "city": _pick_first(d, ['adresse',"code_postal", "cp","city"]),
                     "rating": _pick_first(d, ["rating", "note"]),
                     "price_level": _pick_first(d, ["priceLevel"]),
                     "description": _pick_first(d, ["description", "desc"]),
