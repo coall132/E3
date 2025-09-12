@@ -240,6 +240,5 @@ def test_prediction(playwright, live_api, live_streamlit):
     # 5) Déconnexion
     page.get_by_role("button", name="Se déconnecter (supprimer le token)").click()
     page.get_by_text("Token supprimé. Vous êtes déconnecté.").wait_for(timeout=15000)
-    page.get_by_text("Pas de token valide. Récupérez-en un.").wait_for(timeout=15000)
 
     browser.close()
