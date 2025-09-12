@@ -36,6 +36,19 @@ jobs:
   tests-client-e2e:
     needs: tests-api
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:13-alpine 
+        env:
+          POSTGRES_USER: testuser
+          POSTGRES_PASSWORD: testpassword
+          POSTGRES_DB: testdb
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
     permissions:
       contents: read
     steps:
@@ -63,7 +76,7 @@ jobs:
             -e SKIP_RANK_MODEL=1 \
             -e DISABLE_WARMUP=1 \
             -e API_STATIC_KEY=${{ secrets.API_STATIC_KEY }} \
-            -e DATABASE_URL="sqlite+pysqlite:////tmp/test.db"  \
+            -e DATABASE_URL="postgresql+psycopg2://testuser:testpassword@127.0.0.1:5432/testdb" \
             api-test
           for i in {1..40}; do
             if curl -fsS http://127.0.0.1:8000/ >/dev/null; then
