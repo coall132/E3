@@ -267,7 +267,7 @@ with st.form("predict_form", clear_on_submit=False):
     with c3:
         k = st.slider("k (nb de résultats)", 1, 20, 5)
     with c4:
-        use_ml = st.checkbox("use_ml", value=True)
+        use_ml = st.checkbox("use_ml", value=False)
     submitted = st.form_submit_button("Lancer /predict", disabled=disabled_predict)
 
 if submitted:
