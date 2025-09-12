@@ -5,6 +5,7 @@ import requests
 import streamlit as st
 from typing import Any, Dict, List, Optional
 import re
+import traceback
 
 
 DEFAULT_API_BASE = os.getenv("API_BASE_URL")
@@ -279,41 +280,68 @@ if submitted:
         "options": selected_opts,
         "description": description or "",
     }
+
+    url = f"{st.session_state['base_url']}/predict"
+    params = {"k": k, "use_ml": str(use_ml).lower()}
+    to = st.session_state.get("http_timeout", DEFAULT_HTTP_TIMEOUT)
+        
     try:
         url = f"{st.session_state['base_url']}/predict"
         params = {"k": k, "use_ml": str(use_ml).lower()}
         to = st.session_state.get("http_timeout", DEFAULT_HTTP_TIMEOUT)
         with st.spinner(f"Appel /predict… (timeout {to}s)"):
             resp = _api_post(url, json_body=form, headers=_bearer_headers(), params=params, timeout=to)
-        st.write("--- DÉBOGAGE : RÉPONSE BRUTE DE L'API ---")
-        print(resp)
-        st.json(resp)
+        
+        # --- DÉBOGAGE 1 : AFFICHER LA RÉPONSE BRUTE DANS LES LOGS ---
+        print("\n--- [STREAMLIT DEBUG] Réponse brute de l'API reçue ---")
+        # On utilise json.dumps pour un affichage propre et lisible dans les logs
+        print(json.dumps(resp, indent=2))
+        print("-----------------------------------------------------\n")
+        
         st.session_state["last_prediction"] = resp
         st.success("Prédiction OK")
 
-        items_rich = resp.get("items_rich", [])
-        rows = []
-        for it in items_rich:
-            d = it.get("details") or {}
-            opts_list = _extract_options(d)
-            row = {
-                "rank": it.get("rank"),
-                "score": it.get("score"),
-                "id_etab": it.get("etab_id"),
-                "name": _pick_first(d, ["name", "nom", "title", "libelle"]),
-                "city": _pick_first(d, ['adresse',"code_postal", "cp"]),
-                "rating": _pick_first(d, ["rating", "note"]),
-                "price_level": _pick_first(d, ["priceLevel"]),
-                "description": _pick_first(d, ["description", "desc"]),
-            }
-            rows.append(row)
+        # --- DÉBOGAGE 2 : ISOLER L'ERREUR DE TRAITEMENT ---
+        try:
+            items_rich = resp.get("items_rich", [])
+            rows = []
+            if not items_rich:
+                st.info("La réponse de l'API ne contient pas de résultats (`items_rich` est vide).")
+            
+            for it in items_rich:
+                # ... (votre logique pour créer l'objet 'row')
+                d = it.get("details") or {}
+                row = {
+                    "rank": it.get("rank"),
+                    "score": it.get("score"),
+                    "id_etab": it.get("etab_id"),
+                    "name": _pick_first(d, ["name", "nom", "title", "libelle"]),
+                    "city": _pick_first(d, ['adresse',"code_postal", "cp"]),
+                    "rating": _pick_first(d, ["rating", "note"]),
+                    "price_level": _pick_first(d, ["priceLevel"]),
+                    "description": _pick_first(d, ["description", "desc"]),
+                }
+                rows.append(row)
 
-        if rows:
-            st.dataframe(rows, use_container_width=True, hide_index=True)
-        else:
-            st.info("Aucun champ attendu trouvé dans `items_rich`.")
-    except Exception as e:
-        st.error(f"Erreur /predict : {e}")
+            if rows:
+                st.dataframe(rows, use_container_width=True, hide_index=True)
+            else:
+                st.info("Aucun restaurant à afficher après traitement.")
+
+        except Exception as e_processing:
+            # Si le traitement des données échoue, on l'affiche dans les logs
+            print("\n---! [STREAMLIT DEBUG] ERREUR LORS DU TRAITEMENT DES DONNÉES !---")
+            traceback.print_exc() # Affiche la trace d'erreur complète dans la console
+            print("---------------------------------------------------------------------\n")
+            # On affiche aussi l'erreur dans l'interface Streamlit
+            st.error("Une erreur est survenue lors du traitement de la réponse de l'API.")
+            st.code(traceback.format_exc())
+
+    except Exception as e_api:
+        print(f"\n---! [STREAMLIT DEBUG] ERREUR LORS DE L'APPEL API !---")
+        traceback.print_exc()
+        print("---------------------------------------------------------\n")
+        st.error(f"Erreur lors de l'appel à /predict : {e_api}")
 
 st.divider()
 
