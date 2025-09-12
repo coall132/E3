@@ -229,7 +229,6 @@ def test_prediction(playwright, live_api, live_streamlit):
     try : 
         page.get_by_text("Prédiction OK").wait_for(timeout=15000)
     except Exception as e:
-        # Si ça échoue, on prend une capture d'écran spécifique à cette étape
         screenshot_path = results_dir / "echec-prediction.png"
         page.screenshot(path=screenshot_path)
         print(f"Screenshot for prediction failure saved to {screenshot_path}")
