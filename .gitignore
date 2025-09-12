@@ -219,7 +219,14 @@ API/.pytest_cache/
 API/tests/
 API/.mypy_cache/
 API/.ruff_cache/
-API/artifacts/
 API/data/
 *.ipynb
 test.py
+API/artifacts/benchmark_per_query_param_3.csv
+API/artifacts/benchmark_per_query_param_4.csv
+API/artifacts/benchmark_summary_param_3.csv
+API/artifacts/benchmark_per_query.csv
+API/artifacts/benchmark_summary_param_4.csv
+API/artifacts/benchmark_summary.csv
+API/artifacts/preproc_items2.joblib
+API/artifacts/rank_model2.joblib
