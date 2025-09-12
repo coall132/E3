@@ -69,8 +69,9 @@ app.add_middleware(
 API_STATIC_KEY = os.getenv("API_STATIC_KEY", "coall")
 api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)
 
+if os.getenv("DISABLE_DB_INIT", "0") != "1":
+    models.ensure_ml_schema(engine)
 
-models.ensure_ml_schema(engine)
 models._attach_external_tables(engine)
 models.Base.metadata.create_all(bind=engine)
 

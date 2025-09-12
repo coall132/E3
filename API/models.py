@@ -12,13 +12,24 @@ from sqlalchemy import Column, Integer, TIMESTAMP, func, ForeignKey, Table
 try:
     from .database import Base
 except:
-    from API.database import Base
+    try :
+        from API.database import Base
+    except :
+        Base = None
 
 def ensure_ml_schema(engine):
-    with engine.connect() as conn:
-        conn.execute(text('CREATE SCHEMA IF NOT EXISTS "ml"'))
-        conn.execute(text('CREATE SCHEMA IF NOT EXISTS "user_base"'))
-        conn.commit()
+    if engine.dialect.name == "sqlite":
+        if Base is not None:
+            try:
+                Base.metadata.create_all(engine)
+            except Exception:
+                pass
+        return
+    else :
+        with engine.begin() as conn:
+            conn.execute(text('CREATE SCHEMA IF NOT EXISTS "ml"'))
+            conn.execute(text('CREATE SCHEMA IF NOT EXISTS "user_base"'))
+            conn.commit()
 
 def _attach_external_tables(engine):
     # Reflète la table déjà existante en base dans la metadata des modèles
