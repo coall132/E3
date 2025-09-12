@@ -1670,8 +1670,8 @@ def main_entrainement():
     summary_to_save.to_csv(outdir / "benchmark_summary.csv", index=True)
     per_query.to_csv(outdir / "benchmark_per_query.csv", index=False)
 
-    preproc_path = outdir / "preproc_items1.joblib"
-    model_path   = outdir / "rank_model1.joblib"
+    preproc_path = outdir / "preproc_items.joblib"
+    model_path   = outdir / "rank_model.joblib"
 
     print(f"[save] preproc -> {preproc_path.resolve()}")
     joblib.dump(preproc, preproc_path, compress=("xz", 3))

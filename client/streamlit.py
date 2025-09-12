@@ -232,24 +232,14 @@ with st.form("predict_form", clear_on_submit=False):
         open_str = st.text_input("Ouverture (texte libre)", value="", placeholder="ex: 'ouvert maintenant'")
     with c2:
         all_opts = get_available_options()
-        multi_opts = st.toggle("Sélection multiple d'options", value=True, key="opts_multi")
-
-        if multi_opts:
-            selected_opts = st.multiselect(
-                "Options disponibles",
-                options=all_opts,
-                default=[],
-                format_func=lambda x: OPTION_LABELS.get(x, x),  # affiche un label lisible
-                help="Choisissez une ou plusieurs options"
-            )
-        else:
-            selected_single = st.selectbox(
-                "Option disponible",
-                options=["(aucune)"] + all_opts,
-                format_func=lambda x: OPTION_LABELS.get(x, x) if x != "(aucune)" else x,
-                help="Sélection simple"
-            )
-            selected_opts = [] if selected_single == "(aucune)" else [selected_single]
+        selected_opts = st.multiselect(
+                    "Options disponibles",
+                    options=all_opts,
+                    default=[],
+                    format_func=lambda x: OPTION_LABELS.get(x, x),
+                    help="Sélectionnez 0, 1 ou plusieurs options",
+                    key="opts"
+                    )
         description = st.text_area("Description / préférences", height=100, placeholder="Ex: italien cosy, terrasse, budget moyen…")
     c3, c4, c5 = st.columns([1,1,2])
     with c3:
