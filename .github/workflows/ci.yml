@@ -76,7 +76,7 @@ jobs:
             -e SKIP_RANK_MODEL=1 \
             -e DISABLE_WARMUP=1 \
             -e API_STATIC_KEY=${{ secrets.API_STATIC_KEY }} \
-            -e DATABASE_URL="postgresql+psycopg2://testuser:testpassword@127.0.0.1:5432/testdb" \
+            -e DATABASE_URL="postgresql+psycopg2://testuser:testpassword@postgres:5432/testdb" \
             api-test
           for i in {1..40}; do
             if curl -fsS http://127.0.0.1:8000/ >/dev/null; then
