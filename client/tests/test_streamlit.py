@@ -99,7 +99,7 @@ def live_streamlit(monkeypatch, live_api):
     env["STREAMLIT_BROWSER_GATHER_USAGE_STATS"] = "false"
 
     cmd = [
-        "streamlit", "run", "streamlit.py",
+        "streamlit", "run", "client/streamlit.py",
         "--server.headless=true",
         f"--server.port={st_port}",
         "--browser.serverAddress=127.0.0.1",
