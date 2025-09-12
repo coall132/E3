@@ -54,7 +54,7 @@ jobs:
           key: pip-client-${{ runner.os }}-${{ hashFiles('client/requirements_client.txt') }}
       
       - name: Build API image
-        run: docker build -t api-test -f API/Dockerfile --target prod .
+        run: docker build -t api-test -f API/Dockerfile --target dev
 
       - name: Run API container
         run: |
