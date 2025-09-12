@@ -42,6 +42,7 @@ CMD ["uvicorn", "API.main:app", "--host", "0.0.0.0", "--port", "8000"]
 # ---------- DEV (no model here) ----------
 FROM deps AS dev
 
+COPY ./API/requirements_api.txt /tmp/requirements_api.txt
 COPY ./API/requirements_dev.txt /tmp/requirements_dev.txt
 RUN pip install --no-cache-dir -r /tmp/requirements_dev.txt
 
