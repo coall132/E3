@@ -58,17 +58,20 @@ jobs:
 
       - name: Run API container
         run: |
-          docker run -d --name api-test \
-            -p 8001:8000 \
-            -e DISABLE_WARMUP=1 \
+          docker run -d --rm --name api-test \
+            -p 8000:8000 \
             -e SKIP_RANK_MODEL=1 \
+            -e DISABLE_WARMUP=1 \
             -e API_STATIC_KEY=testpass \
+            -e DATABASE_URL=sqlite:///./test.db \
             api-test
-          for i in {1..60}; do
-            if curl -fsS http://127.0.0.1:8001/ >/dev/null; then exit 0; fi
+          for i in {1..40}; do
+            if curl -fsS http://127.0.0.1:8000/ >/dev/null; then
+              echo "API up"; break; fi
             sleep 2
+            docker logs api-test --tail 80 || true
+            if [ $i -eq 40 ]; then docker logs api-test; exit 1; fi
           done
-          echo "API not responding" >&2; exit 1
 
       - name: Export E2E_API_BASE
         run: echo "E2E_API_BASE=http://127.0.0.1:8001" >> $GITHUB_ENV
