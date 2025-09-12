@@ -17,6 +17,8 @@ services:
       MLFLOW_EXPERIMENT: restaurant-api
       MLFLOW_BACKEND_STORE_URI: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       MLFLOW_ARTIFACTS_DESTINATION: file:///mlruns2
+      API_STATIC_KEY: ${API_STATIC_KEY}
+      JWT_SECRET: ${JWT_SECRET}
     networks:
       - data_network
 

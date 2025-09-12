@@ -299,13 +299,15 @@ if submitted:
 
         # --- DÉBOGAGE 2 : ISOLER L'ERREUR DE TRAITEMENT ---
         try:
+            print=('ouiiiiiii')
             items_rich = resp.get("items_rich", [])
             rows = []
             if not items_rich:
+                print("nooooooooooooooon")
                 st.info("La réponse de l'API ne contient pas de résultats (`items_rich` est vide).")
             
             for it in items_rich:
-                # ... (votre logique pour créer l'objet 'row')
+
                 d = it.get("details") or {}
                 row = {
                     "rank": it.get("rank"),
@@ -318,18 +320,19 @@ if submitted:
                     "description": _pick_first(d, ["description", "desc"]),
                 }
                 rows.append(row)
-
+            print('okkkkkkkkkkkkkk')
             if rows:
+                print("nnnnnnnnnnnnnnnnnn")
                 st.dataframe(rows, use_container_width=True, hide_index=True)
             else:
+                print('rrrrrrrrrrrrrr')
                 st.info("Aucun restaurant à afficher après traitement.")
 
         except Exception as e_processing:
             # Si le traitement des données échoue, on l'affiche dans les logs
             print("\n---! [STREAMLIT DEBUG] ERREUR LORS DU TRAITEMENT DES DONNÉES !---")
-            traceback.print_exc() # Affiche la trace d'erreur complète dans la console
+            traceback.print_exc() 
             print("---------------------------------------------------------------------\n")
-            # On affiche aussi l'erreur dans l'interface Streamlit
             st.error("Une erreur est survenue lors du traitement de la réponse de l'API.")
             st.code(traceback.format_exc())
 
