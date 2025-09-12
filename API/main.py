@@ -115,7 +115,18 @@ def _init_db_schema():
 def warmup():
     # Mode dev: ne rien charger de lourd
     if os.getenv("DISABLE_WARMUP", "0") == "1":
-        app.state.DF_CATALOG    = pd.DataFrame()
+        app.state.DF_CATALOG = pd.DataFrame({
+            'id_etab': [101, 102, 103, 104],
+            'name': ['Resto de Test A', 'Bistrot Fictif B', 'Pizzeria Mimo C', 'Le Bon Burger'],
+            'city': ['Tours', 'Tours', 'Paris', 'Lyon'],
+            'price_level': [2, 3, 1, 2],
+            'description': ['Une description pour le test A', 'Description pour B', 'italien cosy', 'burger gourmand'],
+            'review_text': ['Super ambiance', 'un peu cher', 'les meilleures pizzas', 'frites maison excellentes'],
+            # Ajoutez ici toute autre colonne utilisée par votre fonction build_item_features_df
+            # Par exemple, si vous avez des booléens pour les options :
+            'delivery': [True, False, True, True],
+            'outdoorSeating': [False, True, False, True]
+        })
         app.state.SENT_MODEL    = utils._StubSentModel()  # stub léger
         app.state.PREPROC       = None
         app.state.ML_MODEL      = None
