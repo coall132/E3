@@ -69,11 +69,34 @@ app.add_middleware(
 API_STATIC_KEY = os.getenv("API_STATIC_KEY", "coall")
 api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)
 
-if os.getenv("DISABLE_DB_INIT", "0") != "1":
-    models.ensure_ml_schema(engine)
+def _safe_db_bootstrap(engine):
+    # Skip complet en CI / e2e
+    if os.getenv("DISABLE_DB_INIT", "0") == "1":
+        print("[startup] DB init disabled (DISABLE_DB_INIT=1)")
+        return
 
-models._attach_external_tables(engine)
-models.Base.metadata.create_all(bind=engine)
+    dialect = engine.dialect.name
+
+    if dialect in ("postgresql", "postgres"):
+        # Chemin Postgres : schéma + tables + éventuels foreign tables
+        models.ensure_ml_schema(engine)
+        if getattr(models, "_attach_external_tables", None):
+            try:
+                models._attach_external_tables(engine)
+            except Exception as e:
+                print(f"[startup] _attach_external_tables skipped: {e}")
+        models.Base.metadata.create_all(bind=engine, checkfirst=True)
+
+    elif dialect == "sqlite":
+        from sqlalchemy import create_engine
+        with engine.begin() as conn:
+            conn = conn.execution_options(schema_translate_map={"ml": None,"user_base":None})
+            models.Base.metadata.create_all(bind=conn, checkfirst=True)
+
+    else:
+        models.Base.metadata.create_all(bind=engine, checkfirst=True)
+
+_safe_db_bootstrap(engine)
 
 @app.on_event("startup")
 def _init_db_schema():
