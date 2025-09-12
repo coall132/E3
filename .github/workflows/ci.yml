@@ -145,7 +145,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: ./client
-          file: ./client/Dockerfile.streamlit
+          file: ./client/streamlit.Dockerfile
           push: true
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/restaurant-client:latest
