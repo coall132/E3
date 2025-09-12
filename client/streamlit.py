@@ -6,6 +6,7 @@ import streamlit as st
 from typing import Any, Dict, List, Optional
 
 DEFAULT_API_BASE = os.getenv("API_BASE_URL")
+E2E = os.getenv("E2E_MODE") == "1"
 
 st.set_page_config(page_title="Reco Restaurants — Client API", layout="wide")
 st.title("Reco Restaurants — Client Streamlit (API externe)")
@@ -165,7 +166,10 @@ with st.sidebar:
         email = st.text_input("Email")
         username = st.text_input("Username (unique)")
         static_password = st.text_input("Mot de passe API (doit = API_STATIC_KEY côté serveur)", type="password")
-        if st.button("Créer une API key", use_container_width=True, disabled=not (email and username and static_password)):
+        disabled = not (email and username and static_password)
+        if E2E:
+            disabled = False
+        if st.button("Créer une API key", use_container_width=True, disabled=disabled ):
             try:
                 url = f"{st.session_state['base_url']}/auth/api-keys"
                 payload = {"email": email.strip(), "username": username.strip()}

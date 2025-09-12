@@ -63,6 +63,7 @@ def live_api(monkeypatch):
 @pytest.fixture(scope="function")
 def live_streamlit(monkeypatch, live_api):
     external = os.getenv("E2E_CLIENT_BASE")
+    env["E2E_MODE"] = "1"
     if external:
         st_url = external.rstrip("/")
         _wait_http_ok(st_url + "/_stcore/health")
