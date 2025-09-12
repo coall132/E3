@@ -390,7 +390,9 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
         base["prediction_id"] = pred_id
 
         ids = [int(it["etab_id"]) for it in base.get("items", [])]
+        print("oui")
         details_map = CRUD.get_etablissements_details_bulk(db, ids)
+        print("non")
 
         items_rich = []
         for it in base.get("items", []):
