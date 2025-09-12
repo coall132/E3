@@ -1,4 +1,4 @@
-import os, time, socket, subprocess, requests, signal
+import os, time, socket, subprocess, requests, signal, time
 import pytest, uvicorn
 from multiprocessing import Process
 from contextlib import closing
@@ -144,8 +144,8 @@ def test_prediction(playwright, live_api, live_streamlit):
     page.goto(live_streamlit, wait_until="networkidle")
 
     # 1) Création API key
-    page.get_by_label("Email").fill("alice@example.com")
-    page.get_by_label("Username (unique)").fill("alice")
+    page.get_by_label("Email").fill(f"alice+{timestamp}@example.com")
+    page.get_by_label("Username (unique)").fill(f"alice-{timestamp}")
     page.get_by_label("Mot de passe API").fill(os.getenv("API_STATIC_KEY"))
     page.get_by_role("button", name="Créer une API key").click()
     page.get_by_text("API key créée").wait_for(timeout=30000)
