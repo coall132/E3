@@ -85,8 +85,8 @@ def live_api(monkeypatch):
         ]
 
         horaires = [
-            models.OpeningPeriod(id_etab=101, open_day=1, open_time='1200', close_day=1, close_time='1400'),
-            models.OpeningPeriod(id_etab=101, open_day=1, open_time='1900', close_day=1, close_time='2200'), 
+            models.OpeningPeriod(id_etab=101, open_day=1, open_hour=12, open_minute=0, close_day=1, close_hour=14, close_minute=0), # Lundi 12:00 - 14:00
+            models.OpeningPeriod(id_etab=101, open_day=1, open_hour=19, open_minute=0, close_day=1, close_hour=22, close_minute=0), # Lundi 19:00 - 22:00
         ]
 
         objets_de_test = etablissements + options + horaires
