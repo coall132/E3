@@ -4,7 +4,7 @@ from multiprocessing import Process
 from contextlib import closing
 import chromium
 import sys
-import Path
+from pathlib import Path
 
 # ---------- Utils ----------
 
