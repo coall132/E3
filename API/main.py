@@ -14,6 +14,7 @@ from pathlib import Path
 import mlflow, os, uuid, json, time
 from sqlalchemy.exc import IntegrityError
 import traceback
+import sys
 import logging
 logger = logging.getLogger(__name__)
 
@@ -265,10 +266,13 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
         t0 = time.perf_counter()
 
         # ---------- 0) Préconditions & état appli ----------
+        print("--- /predict: 1. Vérification du catalogue ---")
         df_catalog = getattr(app.state, "DF_CATALOG", None)
         if df_catalog is None or df_catalog.empty:
             raise HTTPException(500, "Catalogue vide/non chargé.")
         df = df_catalog
+
+        print(f"--- /predict: 2. Catalogue chargé ({len(df)} lignes) ---")
 
         sent_model = getattr(app.state, "SENT_MODEL", None)
         anchors    = getattr(app.state, "ANCHORS", None)
@@ -285,8 +289,11 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
         except Exception as e:
             db.rollback()
             raise HTTPException(500, f"Insertion du formulaire impossible: {e}")
+        
+        print("--- /predict: 3. Formulaire inséré en BDD ---")
 
         # ---------- 2) Features items + proxy scores ----------
+        print("--- /predict: 4. Appel de build_item_features_df ---")
         form_dict = form.model_dump()
         X_df, gains_proxy = build_item_features_df(df=df,form=form_dict,sent_model=sent_model,include_query_consts=True,anchors=anchors,)
 
@@ -313,12 +320,13 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
             except Exception as e:
                 print(f"[predict] chemin ML en échec, fallback proxy: {e}")
                 used_ml = False
-
+        print("--- /predict: 5. Retour de build_item_features_df ---")
         # ---------- 4) Sélection top-k ----------
         k = int(max(1, min(k or 10, 50)))
         order = np.argsort(scores)[::-1]
         sel = order[:k]
 
+        print("--- /predict: 6. Logique ML terminée ---")
         # ---------- 5) Métadonnées ----------
         latency_ms = int((time.perf_counter() - t0) * 1000)
         model_version = (os.getenv("MODEL_VERSION")or getattr(app.state, "MODEL_VERSION", None)or "dev")
@@ -364,6 +372,8 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
         except Exception as e:
             db.rollback()
             raise HTTPException(500, f"Insertion de la prédiction impossible: {e}")
+        
+        print("--- /predict: 7. Prédiction sauvegardée ---")
 
         # ---------- 8) Logging MLflow (best-effort) ----------
         try:
@@ -372,6 +382,7 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
         except Exception as e:
             print(f"[mlflow] log_prediction_event failed: {e}")
 
+        print("--- /predict: 8. Résultats enrichis, envoi de la réponse ---")
         # ---------- 9) Réponse enrichie ----------
         base = schema.Prediction.model_validate(pred_row).model_dump()
         pred_id = str(pred_row.id)
@@ -385,7 +396,7 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
         for it in base.get("items", []):
             d = details_map.get(int(it["etab_id"]))
             items_rich.append({**it, "details": d})
-
+        print("fin")
         base["items_rich"] = items_rich
         base["message"] = (
             "N’hésitez pas à donner un feedback (0 à 5) via /feedback en utilisant prediction_id."

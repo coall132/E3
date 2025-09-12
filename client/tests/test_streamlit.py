@@ -182,7 +182,7 @@ def test_prediction(playwright, live_api, live_streamlit):
     page.get_by_text("k (nb de résultats)").click()
     page.keyboard.press("ArrowRight")
     page.get_by_role("button", name="Lancer /predict").click()
-    page.get_by_text("Prédiction OK").wait_for(timeout=300000)
+    page.get_by_text("Prédiction OK").wait_for(timeout=60000)
 
     assert page.get_by_text("prediction_id").is_visible()
 
