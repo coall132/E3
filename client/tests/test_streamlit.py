@@ -102,7 +102,7 @@ def live_api(monkeypatch):
     API_STATIC_KEY = os.getenv("API_STATIC_KEY")
     DATABASE_URL = os.getenv("DATABASE_URL")
     JWT_SECRET = os.getenv("JWT_SECRET")
-    E2E = os.getenv("E2E","1")=="1"
+    E2E = os.getenv("E2E","1")
     if external:
         base_url = external.rstrip("/") 
         _wait_http_ok(base_url + "/")

@@ -183,8 +183,7 @@ with st.sidebar:
                 payload = {"email": email_clean, "username": username_clean}
                 r = requests.post(url, json=payload, params={"password": static_password}, timeout=30)
 
-                # Succès si 200/201, et on considère 409 ("existe déjà") comme OK pour rendre l'action idempotente.
-                if r.status_code in (200, 201, 409):
+                if r.status_code in (200, 201):
                     try:
                         data = r.json() if r.content else {}
                     except Exception:
