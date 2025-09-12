@@ -75,7 +75,7 @@ jobs:
           done
 
       - name: Export E2E_API_BASE
-        run: echo "E2E_API_BASE=http://127.0.0.1:8001" >> $GITHUB_ENV
+        run: echo "E2E_API_BASE=http://127.0.0.1:8000" >> $GITHUB_ENV
       
       - name: Install client deps + pytest
         run: |
