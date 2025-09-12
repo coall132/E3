@@ -4,6 +4,7 @@ import json
 import requests
 import streamlit as st
 from typing import Any, Dict, List, Optional
+import re
 
 DEFAULT_API_BASE = os.getenv("API_BASE_URL")
 E2E = os.getenv("E2E","0") == "1"
