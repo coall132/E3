@@ -97,16 +97,6 @@ def _extract_options(details: dict) -> list[str]:
     return res
 
 def _api_post(url: str, *, json_body=None, headers=None, params=None, timeout: int=DEFAULT_HTTP_TIMEOUT):
-    if E2E and "/predict" in url:
-        return {
-            "prediction_id": "mock_pred_id_12345",
-            "items_rich": [
-                {
-                    "rank": 1, "score": 0.99, "etab_id": 101,
-                    "details": {"name": "Restaurant Simulé A", "city": "Tours", "rating": 5, "priceLevel": 2, "description": "Succès du test !"}
-                }
-            ]
-        }
     r = requests.post(url, json=json_body, headers=headers, params=params, timeout=(5, timeout))
     try:
         r.raise_for_status()
