@@ -143,6 +143,7 @@ def test_prediction(playwright, live_api, live_streamlit):
     page = browser.new_page()
     page.goto(live_streamlit, wait_until="networkidle")
 
+    timestamp = int(time.time())
     # 1) Création API key
     page.get_by_label("Email").fill(f"alice+{timestamp}@example.com")
     page.get_by_label("Username (unique)").fill(f"alice-{timestamp}")
