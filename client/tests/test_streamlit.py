@@ -157,8 +157,7 @@ def live_streamlit(monkeypatch, live_api):
         "--browser.serverAddress=127.0.0.1",
     ]
     proc = subprocess.Popen(cmd, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    
-    # On stocke le process dans une variable globale pour que _wait_http_ok puisse le voir
+
     global FAIL_FAST_WITH_LOGS
     FAIL_FAST_WITH_LOGS = proc
     
@@ -206,7 +205,6 @@ def test_prediction(playwright, live_api, live_streamlit):
         screenshot_path = results_dir / "echec-creation-cle.png"
         page.screenshot(path=screenshot_path)
         print(f"Screenshot saved to {screenshot_path}")
-        # On relance l'erreur pour que le test soit bien marqué comme échoué
         raise e
 
     # 2) Token
@@ -233,8 +231,8 @@ def test_prediction(playwright, live_api, live_streamlit):
 
     # 4) /feedback
     page.get_by_role("button", name="Envoyer /feedback").click()
-    page.get_by_label("rating").click()
-    page.get_by_text("2").click()
+    page.get_by_label("Note (0–5)").click() 
+    page.get_by_role("option", name="4").click()
     page.get_by_text("Feedback envoyé").wait_for(timeout=15000)
 
     # 5) Déconnexion

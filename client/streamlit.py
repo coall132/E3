@@ -97,6 +97,16 @@ def _extract_options(details: dict) -> list[str]:
     return res
 
 def _api_post(url: str, *, json_body=None, headers=None, params=None, timeout: int=DEFAULT_HTTP_TIMEOUT):
+    if E2E and "/predict" in url:
+        return {
+            "prediction_id": "mock_pred_id_12345",
+            "items_rich": [
+                {
+                    "rank": 1, "score": 0.99, "etab_id": 101,
+                    "details": {"name": "Restaurant Simulé A", "city": "Tours", "rating": 5, "priceLevel": 2, "description": "Succès du test !"}
+                }
+            ]
+        }
     r = requests.post(url, json=json_body, headers=headers, params=params, timeout=(5, timeout))
     try:
         r.raise_for_status()
@@ -278,8 +288,7 @@ if submitted:
         to = st.session_state.get("http_timeout", DEFAULT_HTTP_TIMEOUT)
         with st.spinner(f"Appel /predict… (timeout {to}s)"):
             resp = _api_post(url, json_body=form, headers=_bearer_headers(), params=params, timeout=to)
-        
-        # --- DÉBOGAGE 1 : AFFICHER LA RÉPONSE BRUTE DANS LES LOGS ---
+    
         print("\n--- [STREAMLIT DEBUG] Réponse brute de l'API reçue ---")
         # On utilise json.dumps pour un affichage propre et lisible dans les logs
         print(json.dumps(resp, indent=2))
