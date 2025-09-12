@@ -66,7 +66,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-API_STATIC_KEY = os.getenv("API_STATIC_KEY", "coall")
+API_STATIC_KEY = os.getenv("API_STATIC_KEY")
 api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)
 
 def _safe_db_bootstrap(engine):

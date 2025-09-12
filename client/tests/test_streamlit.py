@@ -54,6 +54,8 @@ def _wait_http_ok(url, timeout=None):
 @pytest.fixture(scope="function")
 def live_api(monkeypatch):
     external = os.getenv("E2E_API_BASE")
+    API_STATIC_KEY = os.getenv("API_STATIC_KEY")
+    DATABASE_URL = os.getenv("DATABASE_URL")
     if external:
         base_url = external.rstrip("/")
         _wait_http_ok(base_url + "/")
@@ -67,8 +69,8 @@ def live_api(monkeypatch):
 
     monkeypatch.setenv("DISABLE_WARMUP", "1")
     monkeypatch.setenv("SKIP_RANK_MODEL", "1")
-    monkeypatch.setenv("API_STATIC_KEY", "testpass")
-    monkeypatch.setenv("DATABASE_URL", "sqlite+pysqlite:////tmp/test.db")
+    monkeypatch.setenv("API_STATIC_KEY", API_STATIC_KEY)
+    monkeypatch.setenv("DATABASE_URL", DATABASE_URL)
 
     config = uvicorn.Config(fastapi_app, host="127.0.0.1", port=api_port, log_level="info")
     server = uvicorn.Server(config)

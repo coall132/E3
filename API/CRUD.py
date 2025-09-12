@@ -36,8 +36,8 @@ api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)  # pour /auth/
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
 ph = PasswordHasher(time_cost=2, memory_cost=102400, parallelism=8)
 
-API_STATIC_KEY = os.getenv("API_STATIC_KEY", "coall")  # pour échanger contre un token
-JWT_SECRET = os.getenv("JWT_SECRET", "coall")
+API_STATIC_KEY = os.getenv("API_STATIC_KEY")  # pour échanger contre un token
+JWT_SECRET = os.getenv("JWT_SECRET")
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 _MLFLOW_READY = False
