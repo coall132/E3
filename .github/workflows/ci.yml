@@ -147,7 +147,6 @@ jobs:
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Déployer localement (pull & up)
-        shell: powershell
         env:
           IMAGE_TAG: ${{ github.sha }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
