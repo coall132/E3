@@ -48,24 +48,51 @@ class Form(BaseModel):
         }
     })
 
+class Geo(BaseModel):
+    lat: Optional[float] = None
+    lng: Optional[float] = None
+
+class EtablissementDetails(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    
+    id_etab: int
+    nom: Optional[str] = None
+    adresse: Optional[str] = None
+    telephone: Optional[str] = None
+    site_web: Optional[str] = None
+    description: Optional[str] = None
+    rating: Optional[float] = None
+    priceLevel: Optional[int] = None
+    priceLevel_symbole: Optional[str] = None
+    startPrice: Optional[float] = None
+    endPrice: Optional[float] = None
+    geo: Optional[Geo] = None
+    options_actives: List[str] = []
+    horaires: List[str] = []
+
 class PredictionItem(BaseModel):
-    model_config = ConfigDict(from_attributes=True, extra="forbid")
-    id: Optional[UUID] = Field(default=None, json_schema_extra={"readOnly": True})
-    prediction_id: Optional[UUID] = Field(default=None, json_schema_extra={"readOnly": True})
+    model_config = ConfigDict(from_attributes=True)
     rank: int
     etab_id: int
     score: float
 
-class Prediction(BaseModel):
-    model_config = ConfigDict(from_attributes=True, extra="forbid")
-    id: Optional[UUID] = Field(default=None, json_schema_extra={"readOnly": True})
-    form_id: UUID
-    k: int = Field(10, ge=1, le=50)
-    model_version: Optional[str] = Field(default=None, json_schema_extra={"readOnly": True})
-    latency_ms: Optional[int] = Field(default=None, json_schema_extra={"readOnly": True})
-    status: Optional[str] = "ok"
+class PredictionItemRich(PredictionItem):
+    details: Optional[EtablissementDetails] = None
 
+class Prediction(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: UUID
+    form_id: UUID
+    k: int
+    model_version: Optional[str] = None
+    latency_ms: Optional[int] = None
+    status: Optional[str] = "ok"
     items: List[PredictionItem] = []
+
+class PredictionResponse(Prediction):
+    prediction_id: UUID
+    items_rich: List[PredictionItemRich] = []
+    message: Optional[str] = None
 
 class FeedbackIn(BaseModel):
     prediction_id: UUID  = Field(description="ID de la prédiction à évaluer.")

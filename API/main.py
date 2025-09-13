@@ -343,6 +343,7 @@ def issue_token(API_key_in: Optional[str] = Security(api_key_header),x_api_key_h
     description=("Calcule un top-k d’établissements en fonction du formulaire utilisateur.\n\n"
                 "- `use_ml=true` active la voie ML si disponible, sinon fallback proxy.\n"
                 "- `k` est borné à [1,50]."),
+    response_model=schema.PredictionResponse,
     response_model_exclude_none=True,
     responses={400: {"model": schema.ErrorResponse, "description": "Entrée invalide."},
                 401: {"model": schema.ErrorResponse, "description": "Non autorisé."},
