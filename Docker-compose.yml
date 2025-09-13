@@ -7,7 +7,6 @@ services:
       dockerfile: ./API/Dockerfile
       target: prod
     image: ${DOCKERHUB_USERNAME:-local}/restaurant-api:${IMAGE_TAG:-dev}
-    container_name: api_ia
     ports: ["8001:8000"]
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
@@ -41,7 +40,6 @@ services:
       context: .
       dockerfile: ./mlflow.Dockerfile
     image: ${DOCKERHUB_USERNAME:-local}/restaurant-mlflow:${IMAGE_TAG:-dev}
-    container_name: mlflow
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
