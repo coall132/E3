@@ -143,30 +143,34 @@ jobs:
 
   deploy-local:
     needs: build-and-push
-    runs-on: [self-hosted, local, windows]   
+    runs-on: [self-hosted, local, windows]
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Déployer localement (pull & up)
-        shell: powershell                   
+        shell: powershell
         env:
           IMAGE_TAG: ${{ github.sha }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
+          $ErrorActionPreference = 'Stop'
+          # Bypass la policy uniquement pour ce process (pas besoin d’admin)
+          Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
+
           # Aller dans le dossier où TU as mis docker-compose.yml et .env
           Set-Location "$env:USERPROFILE\app"
 
-          # Login au registre (si privé)
+          # Login au registre
           $env:DOCKER_CLI_HINTS = "false"
           $env:DOCKERHUB_TOKEN | docker login -u $env:DOCKERHUB_USERNAME --password-stdin
 
-          # Créer le réseau seulement s'il n'existe pas (idempotent)
+          # Réseau externe idempotent
           if (-not (docker network ls --format '{{.Name}}' | Select-String -Quiet '^data_network$')) {
             docker network create data_network | Out-Null
           }
 
-          # Passer le tag du commit à compose
-          $env:IMAGE_TAG = "$env:IMAGE_TAG"
+          # IMAGE_TAG déjà dans l'env via 'env:' ci-dessus
+          Write-Host "Deploying IMAGE_TAG=$env:IMAGE_TAG"
 
           docker compose --env-file .env pull
           docker compose --env-file .env up -d
