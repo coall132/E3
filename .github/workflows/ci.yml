@@ -143,29 +143,29 @@ jobs:
 
   deploy-local:
     needs: build-and-push
-    runs-on: self-hosted   
+    runs-on: [self-hosted, local, windows]   
     if: github.ref == 'refs/heads/main'
     steps:
       - name: Déployer localement (pull & up)
-        shell: pwsh
+        shell: powershell                   
         env:
-          IMAGE_TAG: ${{ github.sha }}               
+          IMAGE_TAG: ${{ github.sha }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
-          # dossier où TU as mis docker-compose.yml et .env
+          # Aller dans le dossier où TU as mis docker-compose.yml et .env
           Set-Location "$env:USERPROFILE\app"
 
-          # login au registre si images privées
+          # Login au registre (si privé)
           $env:DOCKER_CLI_HINTS = "false"
-          Write-Output $env:DOCKERHUB_TOKEN | docker login -u $env:DOCKERHUB_USERNAME --password-stdin
+          $env:DOCKERHUB_TOKEN | docker login -u $env:DOCKERHUB_USERNAME --password-stdin
 
-          # réseau externe (idempotent)
-          if (-not (docker network ls --format '{{.Name}}' | Select-String -SimpleMatch 'data_network')) {
+          # Créer le réseau seulement s'il n'existe pas (idempotent)
+          if (-not (docker network ls --format '{{.Name}}' | Select-String -Quiet '^data_network$')) {
             docker network create data_network | Out-Null
           }
 
-          # passer le tag du commit à compose
+          # Passer le tag du commit à compose
           $env:IMAGE_TAG = "$env:IMAGE_TAG"
 
           docker compose --env-file .env pull
