@@ -1,104 +1,71 @@
+version: "3.9"
+
 services:
   api:
     build:
       context: .
       dockerfile: ./API/Dockerfile
       target: prod
+    image: ${DOCKERHUB_USERNAME:-local}/restaurant-api:${IMAGE_TAG:-dev}
     container_name: api_ia
-    ports:
-      - "8001:8000"
+    ports: ["8001:8000"]
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_PORT: ${POSTGRES_PORT}
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MLFLOW_EXPERIMENT: restaurant-api
-      MLFLOW_BACKEND_STORE_URI: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      MLFLOW_ARTIFACTS_DESTINATION: file:///mlruns2
+      MLFLOW_BACKEND_STORE_URI: ${MLFLOW_BACKEND_STORE_URI}
+      MLFLOW_ARTIFACTS_DESTINATION: ${MLFLOW_ARTIFACTS_DESTINATION}
       API_STATIC_KEY: ${API_STATIC_KEY}
       JWT_SECRET: ${JWT_SECRET}
-    networks:
-      - data_network
+    networks: [data_network]
 
   client:
     build:
       context: ./client
-      dockerfile: streamlit.Dockerfile
+      dockerfile: ./streamlit.Dockerfile
+    image: ${DOCKERHUB_USERNAME:-local}/restaurant-client:${IMAGE_TAG:-dev}
     environment:
-      - API_BASE_URL=http://api:8000
+      API_BASE_URL: http://api:8000
     depends_on:
       api:
         condition: service_started
-    ports:
-      - "8501:8501"
-    networks:
-      - data_network
-
-  minio-init:
-    image: minio/mc
-    depends_on: []
-    entrypoint: >
-      sh -lc "
-        until (mc alias set myminio http://minio:9000 ${AWS_ACCESS_KEY_ID} ${AWS_SECRET_ACCESS_KEY}); do echo 'waiting for minio...'; sleep 2; done;
-        mc mb -p myminio/mlflow-artifacts || true;
-        mc ls myminio;
-      "
-    networks:
-      - data_network
+    ports: ["8501:8501"]
+    networks: [data_network]
 
   mlflow:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: ./mlflow.Dockerfile
+    image: ${DOCKERHUB_USERNAME:-local}/restaurant-mlflow:${IMAGE_TAG:-dev}
     container_name: mlflow
     environment:
-      # Backend (tracking) : Postgres
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
-      POSTGRES_HOST: postgres
-      POSTGRES_PORT: 5432
-      MLFLOW_BACKEND_STORE_URI: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      # Artifacts sur FS local servi par MLflow
-      MLFLOW_ARTIFACTS_DESTINATION: file:///mlruns2
+      POSTGRES_HOST: ${POSTGRES_HOST}
+      POSTGRES_PORT: ${POSTGRES_PORT}
+      MLFLOW_BACKEND_STORE_URI: ${MLFLOW_BACKEND_STORE_URI}
+      MLFLOW_ARTIFACTS_DESTINATION: ${MLFLOW_ARTIFACTS_DESTINATION}
       MLFLOW_SERVE_ARTIFACTS: "true"
       MPLCONFIGDIR: /tmp
     volumes:
       - mlflow_artifacts:/mlruns2
-    command: >
-      bash -lc "
-        set -euo pipefail
-        apt-get update &&
-        apt-get install -y --no-install-recommends postgresql-client curl &&
-        rm -rf /var/lib/apt/lists/* &&
-        pip install --no-cache-dir 'mlflow==2.14.0' gunicorn psycopg2-binary &&
-        echo 'Waiting for Postgres...' &&
-        until psql 'postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@${POSTGRES_HOST}:${POSTGRES_PORT}/${POSTGRES_DB}?sslmode=disable' -c 'SELECT 1' >/dev/null 2>&1; do
-          echo 'waiting for postgres...'; sleep 2;
-        done &&
-        exec gunicorn --bind 0.0.0.0:5000 --workers 4 mlflow.server:app
-      "
-    ports:
-      - "5001:5000"
+    ports: ["5001:5000"]
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if 200<=urllib.request.urlopen('http://127.0.0.1:5000/', timeout=3).getcode()<400 else 1)"]
     restart: unless-stopped
     networks: [data_network]
 
   monitor:
-    image: python:3.11-slim
+    build:
+      context: .
+      dockerfile: ./monitor.Dockerfile
+    image: ${DOCKERHUB_USERNAME:-local}/restaurant-monitor:${IMAGE_TAG:-dev}
     working_dir: /app/API
-    command: >
-      bash -lc "
-        pip install --no-cache-dir 'mlflow==2.14.0' requests numpy &&
-        echo 'Waiting for MLflow root...' &&
-        until python -c \"import sys,urllib.request;sys.exit(0 if 200<=urllib.request.urlopen(sys.argv[1],timeout=3).status<400 else 1)\" http://mlflow:5000/; do
-          echo 'waiting root...'; sleep 2;
-        done &&
-        python monitor/monitor_ia.py
-      "
-    volumes:
-      - ./API/monitor:/app/API/monitor:ro
     environment:
       PYTHONUNBUFFERED: "1"
       MLFLOW_TRACKING_URI: http://mlflow:5000
@@ -117,9 +84,8 @@ services:
       mlflow:
         condition: service_started
     restart: unless-stopped
-    networks:
-      - data_network
-      
+    networks: [data_network]
+
 networks:
   data_network:
     external: true

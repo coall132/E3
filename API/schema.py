@@ -13,15 +13,6 @@ class ErrorResponse(BaseModel):
     detail: str = Field(..., description="Message d’erreur lisible.")
     code: str | None = Field(None, description="Code d’erreur applicatif (optionnel).")
 
-@app.exception_handler(HTTPException)
-def http_exception_handler(request: Request, exc: HTTPException):
-    msg = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
-    return JSONResponse(status_code=exc.status_code, content={"detail": msg})
-
-@app.exception_handler(RequestValidationError)
-def validation_exception_handler(request: Request, exc: RequestValidationError):
-    return JSONResponse(status_code=422, content={"detail": "Validation error", "errors": exc.errors()})
-
 class TokenOut(BaseModel):
     access_token: str = Field(description="JWT d’accès.")
     token_type: str = "bearer"

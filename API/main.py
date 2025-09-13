@@ -17,6 +17,11 @@ import traceback
 import sys
 import logging
 from fastapi.openapi.utils import get_openapi
+from fastapi.responses import JSONResponse
+from fastapi.exceptions import RequestValidationError
+from starlette.requests import Request
+from fastapi.security import APIKeyHeader
+from fastapi import Header
 logger = logging.getLogger(__name__)
 
 MLFLOW_URI = os.getenv("MLFLOW_TRACKING_URI") 
@@ -82,31 +87,38 @@ app = FastAPI(
     },
 )
 
+api_key_header   = APIKeyHeader(name="X-API-KEY",   auto_error=False) 
+admin_key_header = APIKeyHeader(name="X-ADMIN-KEY", auto_error=False)
 
 def custom_openapi():
     if app.openapi_schema:
         return app.openapi_schema
 
-    schema = get_openapi(
+    openapi = get_openapi(
         title=app.title,
         version=app.version,
         description=app.description,
-        routes=app.routes,
-    )
-    comps = schema.setdefault("components", {}).setdefault("securitySchemes", {})
+        routes=app.routes)
+
+    comps = openapi.setdefault("components", {}).setdefault("securitySchemes", {})
+    comps["StaticKeyAuth"] = {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-ADMIN-KEY",
+        "description": "Entrez la clé admin statique pour pouvoir créer des clés API (endpoint /auth/api-keys)."}
     comps["ApiKeyAuth"] = {
         "type": "apiKey",
         "in": "header",
         "name": "X-API-KEY",
-        "description": "Clé d’API à demander via /auth/api-keys.",
-    }
+        "description": "Entrez votre X-API-KEY pour obtenir un JWT (endpoint /auth/token)."}
     comps["BearerAuth"] = {
         "type": "http",
         "scheme": "bearer",
         "bearerFormat": "JWT",
-    }
-    schema["security"] = [{"BearerAuth": []}]
-    app.openapi_schema = schema
+        "description": "Collez ici votre token JWT pour /predict, /feedback, etc."}
+    openapi["security"] = [{"BearerAuth": []}]
+
+    app.openapi_schema = openapi
     return app.openapi_schema
 
 app.openapi = custom_openapi
@@ -121,6 +133,15 @@ app.add_middleware(
 
 API_STATIC_KEY = os.getenv("API_STATIC_KEY")
 api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)
+
+@app.exception_handler(HTTPException)
+def http_exception_handler(request: Request, exc: HTTPException):
+    msg = exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+    return JSONResponse(status_code=exc.status_code, content={"detail": msg})
+
+@app.exception_handler(RequestValidationError)
+def validation_exception_handler(request: Request, exc: RequestValidationError):
+    return JSONResponse(status_code=422, content={"detail": "Validation error", "errors": exc.errors()})
 
 def _safe_db_bootstrap(engine):
     # Skip complet en CI / e2e
@@ -287,11 +308,7 @@ def read_root():
                 200: {"description": "Clé créée."}},openapi_extra={"security": []})
 def create_api_key(API_key_in: schema.ApiKeyCreate,password:str, db: Session = Depends(get_db)):
     if password != API_STATIC_KEY:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Password invalide ou manquante.",
-            headers={"WWW-Authenticate": "APIKey"},
-        )
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,detail="Password invalide ou manquante.",headers={"WWW-Authenticate": "APIKey"})
     user = db.query(models.User).filter(models.User.email == API_key_in.email).first()
     if user is None:
         if db.query(models.User).filter(models.User.username == API_key_in.username).first():
@@ -313,8 +330,12 @@ def create_api_key(API_key_in: schema.ApiKeyCreate,password:str, db: Session = D
         description="Échange une clé API valide contre un JWT d’accès temporaire.",
         responses={401: {"model": schema.ErrorResponse, "description": "Clé API invalide."}},
         openapi_extra={"security": [{"ApiKeyAuth": []}]})
-def issue_token(API_key_in: Optional[str] = Security(api_key_header), db: Session = Depends(get_db)):
-    row = CRUD.verify_api_key(db, API_key_in)
+def issue_token(API_key_in: Optional[str] = Security(api_key_header),x_api_key_hdr: Optional[str] = Header(
+        None, alias="X-API-KEY", description="Clé API (si non fournie via Authorize)"),db: Session = Depends(get_db)):
+    key = API_key_in or x_api_key_hdr
+    if not key:
+        raise HTTPException(401, "X-API-KEY manquante")
+    row = CRUD.verify_api_key(db, key)
     token, exp_ts = CRUD.create_access_token(subject=f"user:{row.user_id}")
     return schema.TokenOut(access_token=token, expires_at=exp_ts)
 
@@ -322,7 +343,7 @@ def issue_token(API_key_in: Optional[str] = Security(api_key_header), db: Sessio
     description=("Calcule un top-k d’établissements en fonction du formulaire utilisateur.\n\n"
                 "- `use_ml=true` active la voie ML si disponible, sinon fallback proxy.\n"
                 "- `k` est borné à [1,50]."),
-    response_model=schema.PredictionOut,
+    response_model=schema.Prediction,
     response_model_exclude_none=True,
     responses={400: {"model": schema.ErrorResponse, "description": "Entrée invalide."},
                 401: {"model": schema.ErrorResponse, "description": "Non autorisé."},

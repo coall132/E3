@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 import os, mlflow
 from mlflow.tracking import MlflowClient
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 import io
 import math
 
@@ -33,7 +34,7 @@ except:
     from API import utils
 
 api_key_header = APIKeyHeader(name="X-API-KEY", auto_error=False)  # pour /auth/token uniquement
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/token")
+bearer_scheme = HTTPBearer(auto_error=False)
 ph = PasswordHasher(time_cost=2, memory_cost=102400, parallelism=8)
 
 API_STATIC_KEY = os.getenv("API_STATIC_KEY")  # pour échanger contre un token
@@ -49,20 +50,23 @@ def create_access_token(subject: str, expires_delta: Optional[timedelta] = None)
     encoded_jwt = jwt.encode(to_encode, JWT_SECRET, algorithm=ALGORITHM)
     return encoded_jwt, int(expire.timestamp())
 
-async def get_current_subject(token: str = Depends(oauth2_scheme)):
-    credentials_exc = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Token invalide ou expiré.",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+async def get_current_subject(credentials: HTTPAuthorizationCredentials = Security(bearer_scheme),):
+    if not credentials or (credentials.scheme or "").lower() != "bearer":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token Bearer manquant",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    token = credentials.credentials
     try:
         payload = jwt.decode(token, JWT_SECRET, algorithms=[ALGORITHM])
         sub: Optional[str] = payload.get("sub")
-        if sub is None:
-            raise credentials_exc
+        if not sub:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sujet JWT manquant")
         return sub
     except JWTError:
-        raise credentials_exc
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,detail="Token invalide ou expiré.",headers={"WWW-Authenticate": "Bearer"},)
 
 def generate_api_key():
     key_id = secrets.token_hex(4)
