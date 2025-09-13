@@ -302,6 +302,20 @@ def topk_mean_cosine(mat_or_list, z, k=3):
     idx = np.argpartition(sims, -k)[-k:]
     return float(np.mean(sims[idx]))
 
+def cos01_safe(v: np.ndarray, z: np.ndarray) -> float:
+    """Cosinus robuste ∈ [0,1] avec alignement des dimensions et normalisation."""
+    v = np.asarray(v, np.float32).ravel()
+    z = np.asarray(z, np.float32).ravel()
+    m = min(v.size, z.size)
+    if m == 0:
+        return 0.0
+    vv, zz = v[:m], z[:m]
+    nv = np.linalg.norm(vv); nz = np.linalg.norm(zz)
+    if nv == 0.0 or nz == 0.0:
+        return 0.0
+    c = float(np.dot(vv / nv, zz / nz))          # c ∈ [-1,1]
+    return 0.5 * (np.clip(c, -1.0, 1.0) + 1.0)   # → [0,1]
+
 def score_text(df, form, model, w_rev=0.6, w_desc=0.4, k=3, missing_cos=0.0):
     q = (form.get("description") or "").strip()
     N = len(df)
@@ -316,7 +330,7 @@ def score_text(df, form, model, w_rev=0.6, w_desc=0.4, k=3, missing_cos=0.0):
     if desc_list is not None:
         for i, v in enumerate(desc_list):
             if isinstance(v, np.ndarray) and v.ndim == 1 and v.size > 0:
-                cos_desc[i] = _cos01_safe(v, z)
+                cos_desc[i] = cos01_safe(v, z)
 
     # rev top-k
     rev_list = df.get("rev_embeds", None)
@@ -324,7 +338,7 @@ def score_text(df, form, model, w_rev=0.6, w_desc=0.4, k=3, missing_cos=0.0):
     if rev_list is not None:
         for i, L in enumerate(rev_list):
             if isinstance(L, list) and len(L) > 0:
-                vals = [_cos01_safe(r, z) for r in L
+                vals = [cos01_safe(r, z) for r in L
                         if isinstance(r, np.ndarray) and r.ndim == 1 and r.size > 0]
                 if vals:
                     k_ = min(k, len(vals))
@@ -339,7 +353,7 @@ def h_price_vector_simple(df, form):
     diff = (df['priceLevel'].astype(float) - float(lvl_f)).abs()
     return (1.0 - (diff/3.0)).clip(0.0, 1.0).to_numpy(dtype=float)
 
-def h_rating_vector(df, alpha=20.0):
+def h_rating_vector(df, alpha=5.0):
     r = df['rating'].astype(float).fillna(2.5) if 'rating' in df.columns else pd.Series(2.5, index=df.index)
     mu = float(r.mean()) if r.notna().any() else 0.0
     if 'rev_embeds' in df.columns:
@@ -434,19 +448,6 @@ def text_features(df, form, model, k=PROXY_K):
     cos_rev  = (cos_rev  + 1.0)/2.0
     return np.stack([cos_desc, cos_rev], axis=1)
 
-def cos01_safe(v: np.ndarray, z: np.ndarray) -> float:
-    """Cosinus robuste ∈ [0,1] avec alignement des dimensions et normalisation."""
-    v = np.asarray(v, np.float32).ravel()
-    z = np.asarray(z, np.float32).ravel()
-    m = min(v.size, z.size)
-    if m == 0:
-        return 0.0
-    vv, zz = v[:m], z[:m]
-    nv = np.linalg.norm(vv); nz = np.linalg.norm(zz)
-    if nv == 0.0 or nz == 0.0:
-        return 0.0
-    c = float(np.dot(vv / nv, zz / nz))          # c ∈ [-1,1]
-    return 0.5 * (np.clip(c, -1.0, 1.0) + 1.0)   # → [0,1]
 
 def text_features01(df, form, model, k=3, missing_cos01=0.0):
     """
@@ -630,66 +631,61 @@ def build_pointwise(forms_df, preproc, df, X_items, SENT_MODEL, tau=tau, W=W_pro
     qid = np.concatenate(qid_list)
     return X, y, sw, qid
 
-def build_pairwise(forms_df, preproc, df, X_items, SENT_MODEL, tau=tau, W=W_proxy, top_m=10, bot_m=10):
-    Xp, yp, wp = [], [], []
+def build_pairwise(forms, preproc, df, X_items, sent_model, W, top_m=10, bot_m=10):
+    n_items = len(df)
+    d = X_items.shape[1]
 
-    for form in _iter_forms(forms_df):
-        Zf_sp = preproc.transform(form_to_row(form, df))
+    pairs_X, pairs_y, pairs_w = [], [], []
+
+    for f in forms:
+        # vecteur de formulaire
+        Zf_sp = preproc.transform(form_to_row(f, df))
         Zf = Zf_sp.toarray()[0] if hasattr(Zf_sp, "toarray") else np.asarray(Zf_sp)[0]
 
-        # Non-texte
-        H_no_text = {
-            'price':   h_price_vector_simple(df, form),
-            'rating':  h_rating_vector(df),
-            'city':    h_city_vector(df, form),
-            'options': h_opts_vector(df, form),
-            'open':    h_open_vector(df, form, unknown_value=0.5),
-        }
+        # features texte normalisées dans [0,1] (shape = (n_items, 2))
+        T = text_features01(df, f, sent_model, k=PROXY_K)
 
-        # Texte
-        T = text_features01(df, form, SENT_MODEL, k=PROXY_K)
-        text_proxy = PROXY_W_REV * T[:, 1] + (1.0 - PROXY_W_REV) * T[:, 0]
-
-        # Gains pour choisir pos/neg
-        H_lbl = {**H_no_text, 'text': text_proxy}
-        gains = aggregate_gains(H_lbl, W)
-
-        order = np.argsort(gains)
-        n = len(order)
-        pos_idx = order[::-1][:min(top_m, n)]
-        neg_idx = order[:min(bot_m, n)]
-
-        # Features modèle (par item)
+        # features item+form (shape = (n_items, d+2))
         Xq = pair_features(Zf, X_items, T)
 
-        # Construit les paires
-        for ip in pos_idx:
-            for ineg in neg_idx:
-                if ip == ineg:
+        # gains proxy (utilisés aussi côté pointwise)
+        H_no_text = {
+            'price':   h_price_vector_simple(df, f),
+            'rating':  h_rating_vector(df),
+            'city':    h_city_vector(df, f),
+            'options': h_opts_vector(df, f),
+            'open':    h_open_vector(df, f, unknown_value=1.0),
+        }
+        text_proxy = PROXY_W_REV * T[:, 1] + (1.0 - PROXY_W_REV) * T[:, 0]
+        gains = aggregate_gains({**H_no_text, 'text': text_proxy}, W)
+
+        # indices top/bottom (on borne par n_items)
+        k_top = min(top_m, n_items)
+        k_bot = min(bot_m, n_items)
+        top_idx = np.argsort(gains)[::-1][:k_top]
+        bot_idx = np.argsort(gains)[:k_bot]
+
+        # paires i (top) > j (bottom) avec marge positive
+        for i in top_idx:
+            for j in bot_idx:
+                if i == j: 
                     continue
-                Xp.append(Xq[ip] - Xq[ineg])
-                yp.append(1)
-                # poids = |différence de gain|  (>= 0)
-                w = float(abs(gains[ip] - gains[ineg]))
-                wp.append(w)
+                if gains[i] <= gains[j]:
+                    continue
+                pairs_X.append((Xq[i] - Xq[j]).astype(np.float32))
+                pairs_y.append(1)
+                pairs_w.append(float(abs(gains[i] - gains[j]) + 1e-3))
 
-        # Filet de sécurité : si rien n’a été ajouté (dataset trop jouet)
-        if not Xp:
-            best, worst = int(order[-1]), int(order[0])
-            if best != worst:
-                Xp.append(Xq[best] - Xq[worst])
-                yp.append(1)
-                w = float(abs(gains[best] - gains[worst]))
-                wp.append(w if w > 0.0 else 1e-6)
-            else:
-                # extrême secours : paire nulle mais poids epsilon
-                Xp.append(np.zeros_like(Xq[0]))
-                yp.append(1)
-                wp.append(1e-6)
+    if not pairs_X:
+        # Jamais None : tableaux vides mais typés
+        return (np.zeros((0, d + 2), dtype=np.float32),
+                np.zeros((0,), dtype=np.int32),
+                np.zeros((0,), dtype=np.float32))
 
-    Xp = np.vstack(Xp).astype(np.float32)
-    yp = np.ones(len(yp), dtype=int)
-    wp = np.asarray(wp, dtype=float)
+    Xp = np.asarray(pairs_X, dtype=np.float32)
+    yp = np.asarray(pairs_y, dtype=np.int32)
+    wp = np.asarray(pairs_w, dtype=np.float32)
+    return Xp, yp, wp
 
 def gains_to_labels_per_query(gains: np.ndarray, q=(0.50, 0.75, 0.90)) -> np.ndarray:
     """
