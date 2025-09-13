@@ -24,6 +24,17 @@ jobs:
       - name: Install dev deps (API)
         working-directory: API
         run: pip install -r requirements_dev.txt
+      
+      - name: Run tests (API)
+        working-directory: API
+        env:
+          DISABLE_WARMUP: "1"
+          API_STATIC_KEY: ${{ secrets.API_STATIC_KEY }}
+          PYTHONPATH: ${{ github.workspace }}
+          E2E_API_BASE: http://127.0.0.1:8000
+          E2E_CLIENT_BASE: http://127.0.0.1:8501
+          E2E_STARTUP_TIMEOUT: "120"
+          E3_FAST_TEST: "1"
 
   tests-client-e2e:
     needs: tests-api
@@ -154,7 +165,7 @@ jobs:
         run: |
           if not exist "%USERPROFILE%\app" mkdir "%USERPROFILE%\app"
           copy /Y "%GITHUB_WORKSPACE%\docker-compose.yml" "%USERPROFILE%\app\docker-compose.yml"
-          
+
       - name: Déployer localement (pull & up)
         env:
           IMAGE_TAG: ${{ github.sha }}
