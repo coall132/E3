@@ -278,7 +278,6 @@ if submitted:
 
         # --- DÉBOGAGE 2 : ISOLER L'ERREUR DE TRAITEMENT ---
         try:
-            print('ouiiiiiii')
             items_rich = resp.get("items_rich", [])
             rows = []
             if not items_rich:
