@@ -888,7 +888,6 @@ def kendall_tau_at_k(pred, gains_eval, k):
     n = len(common)
     if n < 2:
         return 0.0
-    # séquence des rangs "vrais" dans l’ordre prédit
     seq = [pos_true[itm] for itm in common]
     inv = _count_inversions(seq)
     total = n * (n - 1) // 2

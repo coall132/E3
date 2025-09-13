@@ -152,28 +152,13 @@ jobs:
           IMAGE_TAG: ${{ github.sha }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        shell: cmd
         run: |
-          $ErrorActionPreference = 'Stop'
-          # Bypass la policy uniquement pour ce process (pas besoin d’admin)
-          Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
-
-          # Aller dans le dossier où TU as mis docker-compose.yml et .env
-          Set-Location "$env:USERPROFILE\app"
-
-          # Login au registre
-          $env:DOCKER_CLI_HINTS = "false"
-          $env:DOCKERHUB_TOKEN | docker login -u $env:DOCKERHUB_USERNAME --password-stdin
-
-          # Réseau externe idempotent
-          if (-not (docker network ls --format '{{.Name}}' | Select-String -Quiet '^data_network$')) {
-            docker network create data_network | Out-Null
-          }
-
-          # IMAGE_TAG déjà dans l'env via 'env:' ci-dessus
-          Write-Host "Deploying IMAGE_TAG=$env:IMAGE_TAG"
-
+          cd /d "%USERPROFILE%\app"
+          echo %DOCKERHUB_TOKEN% | docker login -u %DOCKERHUB_USERNAME% --password-stdin
+          for /f "tokens=*" %%i in ('docker network ls --format "{{.Name}}" ^| findstr /r "^data_network$"') do set found=1
+          if not defined found docker network create data_network
           docker compose --env-file .env pull
           docker compose --env-file .env up -d
-
           docker image prune -f
           docker compose ps
