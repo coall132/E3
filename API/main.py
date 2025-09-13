@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 import traceback
 import sys
 import logging
+from fastapi.openapi.utils import get_openapi
 logger = logging.getLogger(__name__)
 
 MLFLOW_URI = os.getenv("MLFLOW_TRACKING_URI") 
@@ -54,11 +55,61 @@ except :
     pick_anchors_from_df = fx.pick_anchors_from_df
     text_features01 = fx.text_features01 
 
+tags_metadata = [
+    {"name": "Auth", "description": "Gestion des clés API et des tokens d’accès."},
+    {"name": "predict", "description": "Endpoints de recommandation et scoring."},
+    {"name": "monitoring", "description": "Feedback et suivi de la qualité du modèle."},
+]
+
 app = FastAPI(
     title="API Reco Restaurant",
-    description="API pour recommander des restaurants",
-    version="1.0.0"
+    description="API pour recommander des restaurants à partir d’un formulaire utilisateur.",
+    version="1.0.0",
+    contact={
+        "name": "Équipe Reco",
+        "email": "kaelig.barillet1@gmail.com",
+    },
+    openapi_tags=tags_metadata,
+    docs_url="/docs",
+    redoc_url="/redoc",
+    swagger_ui_parameters={
+        "displayRequestDuration": True,
+        "docExpansion": "list",            
+        "defaultModelsExpandDepth": 1,
+        "defaultModelExpandDepth": 1,
+        "syntaxHighlight.theme": "monokai",
+        "tryItOutEnabled": True,
+    },
 )
+
+
+def custom_openapi():
+    if app.openapi_schema:
+        return app.openapi_schema
+
+    schema = get_openapi(
+        title=app.title,
+        version=app.version,
+        description=app.description,
+        routes=app.routes,
+    )
+    comps = schema.setdefault("components", {}).setdefault("securitySchemes", {})
+    comps["ApiKeyAuth"] = {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-KEY",
+        "description": "Clé d’API à demander via /auth/api-keys.",
+    }
+    comps["BearerAuth"] = {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+    }
+    schema["security"] = [{"BearerAuth": []}]
+    app.openapi_schema = schema
+    return app.openapi_schema
+
+app.openapi = custom_openapi
 
 app.add_middleware(
     CORSMiddleware,
@@ -229,7 +280,11 @@ def warmup():
 def read_root():
     return {"message": "Bienvenue sur l'API des restaurants. Allez sur /docs pour voir les endpoints."}
 
-@app.post("/auth/api-keys", response_model=schema.ApiKeyResponse, tags=["Auth"])
+@app.post("/auth/api-keys", response_model=schema.ApiKeyResponse, tags=["Auth"],summary="Créer une clé API",
+    description="Crée une clé API liée à un utilisateur (email + username).",
+    responses={ 401: {"model": schema.ErrorResponse, "description": "Password invalide."},
+                409: {"model": schema.ErrorResponse, "description": "Username déjà pris."},
+                200: {"description": "Clé créée."}},openapi_extra={"security": []})
 def create_api_key(API_key_in: schema.ApiKeyCreate,password:str, db: Session = Depends(get_db)):
     if password != API_STATIC_KEY:
         raise HTTPException(
@@ -254,13 +309,24 @@ def create_api_key(API_key_in: schema.ApiKeyCreate,password:str, db: Session = D
     return schema.ApiKeyResponse(api_key=api_key_plain, key_id=key_id)
 
 
-@app.post("/auth/token", response_model=schema.TokenOut, tags=["Auth"])
+@app.post("/auth/token", response_model=schema.TokenOut, tags=["Auth"],summary="Obtenir un token JWT",
+        description="Échange une clé API valide contre un JWT d’accès temporaire.",
+        responses={401: {"model": schema.ErrorResponse, "description": "Clé API invalide."}},
+        openapi_extra={"security": [{"ApiKeyAuth": []}]})
 def issue_token(API_key_in: Optional[str] = Security(api_key_header), db: Session = Depends(get_db)):
     row = CRUD.verify_api_key(db, API_key_in)
     token, exp_ts = CRUD.create_access_token(subject=f"user:{row.user_id}")
     return schema.TokenOut(access_token=token, expires_at=exp_ts)
 
-@app.post("/predict", tags=["predict"], dependencies=[Depends(CRUD.get_current_subject)])
+@app.post("/predict", tags=["predict"], dependencies=[Depends(CRUD.get_current_subject)],summary="Obtenir des recommandations",
+    description=("Calcule un top-k d’établissements en fonction du formulaire utilisateur.\n\n"
+                "- `use_ml=true` active la voie ML si disponible, sinon fallback proxy.\n"
+                "- `k` est borné à [1,50]."),
+    response_model=schema.PredictionOut,
+    response_model_exclude_none=True,
+    responses={400: {"model": schema.ErrorResponse, "description": "Entrée invalide."},
+                401: {"model": schema.ErrorResponse, "description": "Non autorisé."},
+                500: {"model": schema.ErrorResponse, "description": "Erreur serveur."}})
 def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depends(CRUD.current_user_id),db: Session = Depends(get_db),):
     try : 
         t0 = time.perf_counter()
@@ -416,7 +482,11 @@ def predict(form: schema.Form,k: int = 3,use_ml: bool = True,user_id: int = Depe
 
 
 
-@app.post("/feedback", response_model=schema.FeedbackOut, tags=["monitoring"])
+@app.post("/feedback", response_model=schema.FeedbackOut, tags=["monitoring"],dependencies=[Depends(CRUD.get_current_subject)],summary="Envoyer un feedback utilisateur",
+    description="Attache une note/commentaire à une prédiction existante.",
+    responses={401: {"model": schema.ErrorResponse, "description": "Non autorisé."},
+               403: {"model": schema.ErrorResponse, "description": "La prédiction n’appartient pas à l’utilisateur."},
+               404: {"model": schema.ErrorResponse, "description": "Prédiction introuvable."}})
 def submit_feedback(payload: schema.FeedbackIn,sub: str = Depends(CRUD.get_current_subject),
                     db: Session = Depends(get_db),user_id: int = Depends(CRUD.current_user_id)):
     pred = db.query(models.Prediction).options(selectinload(models.Prediction.items)).filter(models.Prediction.id == payload.prediction_id).first()
