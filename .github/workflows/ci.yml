@@ -146,6 +146,15 @@ jobs:
     runs-on: [self-hosted, local, windows]
     if: github.ref == 'refs/heads/main'
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Sync compose to deploy folder (cmd)
+        shell: cmd
+        run: |
+          if not exist "%USERPROFILE%\app" mkdir "%USERPROFILE%\app"
+          copy /Y "%GITHUB_WORKSPACE%\docker-compose.yml" "%USERPROFILE%\app\docker-compose.yml"
+          
       - name: Déployer localement (pull & up)
         env:
           IMAGE_TAG: ${{ github.sha }}

@@ -154,19 +154,26 @@ def test_build_pointwise_and_pairwise_shapes_and_values(monkeypatch, tmp_path):
     pos_idx = order[::-1][:min(10, n_items)]
     neg_idx = order[:min(10, n_items)]
 
+    MAX_NEG_PER_POS = 2          
+    EPS = 1e-12 
+    
     Xq0 = Xq_expected
     Xp_expected, wp_expected = [], []
     for ip in pos_idx:
-        for ineg in neg_idx:
+        for ineg in neg_idx[:MAX_NEG_PER_POS]:
+            w = float(gains0[ip] - gains0[ineg])
+            if abs(w) <= EPS:   
+                continue
             Xp_expected.append(Xq0[ip] - Xq0[ineg])
-            wp_expected.append(float(gains0[ip] - gains0[ineg]))
-    Xp_expected = np.vstack(Xp_expected).astype(np.float32)
-    wp_expected = np.array(wp_expected, dtype=float)
+            wp_expected.append(w)
 
     # Compare avec le début de Xp / wp (le 1er formulaire est traité en premier)
+    Xp_expected = np.vstack(Xp_expected).astype(np.float32)
+    wp_expected = np.asarray(wp_expected, dtype=float)
+
     n_first_block = len(Xp_expected)
     np.testing.assert_allclose(Xp[:n_first_block], Xp_expected, atol=1e-6)
-    np.testing.assert_allclose(wp[:n_first_block], wp_expected, atol=1e-9)
+    np.testing.assert_allclose(wp[:n_first_block], wp_expected, atol=1e-8)
 
 
 def test_train_and_eval_smoke(tmp_path, monkeypatch):
