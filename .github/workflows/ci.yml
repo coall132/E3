@@ -154,7 +154,7 @@ jobs:
         shell: cmd
         run: |
           cd /d "%USERPROFILE%\app"
-          echo %DOCKERHUB_TOKEN% | docker login -u %DOCKERHUB_USERNAME% --password-stdin
+          echo %DOCKERHUB_TOKEN% | docker login -u %DOCKERHUB_USERNAME% --password-stdin 
           for /f "tokens=*" %%i in ('docker network ls --format "{{.Name}}" ^| findstr /r "^data_network$"') do set found=1
           if not defined found docker network create data_network
           docker compose --env-file .env pull
