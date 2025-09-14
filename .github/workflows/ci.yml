@@ -35,7 +35,8 @@ jobs:
           E2E_CLIENT_BASE: http://127.0.0.1:8501
           E2E_STARTUP_TIMEOUT: "120"
           E3_FAST_TEST: "1"
-
+        run: pytest -q
+        
   tests-client-e2e:
     needs: tests-api
     runs-on: ubuntu-latest
