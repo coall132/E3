@@ -63,7 +63,7 @@ async def get_current_subject(credentials: HTTPAuthorizationCredentials = Securi
         payload = jwt.decode(token, JWT_SECRET, algorithms=[ALGORITHM])
         sub: Optional[str] = payload.get("sub")
         if not sub:
-            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sujet JWT manquant")
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Sujet JWT manquant",headers={"WWW-Authenticate": "Bearer"},)
         return sub
     except JWTError:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,detail="Token invalide ou expiré.",headers={"WWW-Authenticate": "Bearer"},)

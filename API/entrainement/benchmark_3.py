@@ -631,60 +631,49 @@ def build_pointwise(forms_df, preproc, df, X_items, SENT_MODEL, tau=tau, W=W_pro
     qid = np.concatenate(qid_list)
     return X, y, sw, qid
 
-def build_pairwise(forms, preproc, df, X_items, sent_model, W, top_m=10, bot_m=10):
+def build_pairwise(forms, preproc, df, X_items, SENT_MODEL, W=None, top_m=10, bot_m=10):
+    import numpy as np
+    W = W or W_proxy
+    MAX_NEG_PER_POS = 2
+    EPS = 1e-12
+
+    X_pairs, w_pairs = [], []
+
     n_items = len(df)
-    d = X_items.shape[1]
-
-    pairs_X, pairs_y, pairs_w = [], [], []
-
     for f in forms:
-        # vecteur de formulaire
         Zf_sp = preproc.transform(form_to_row(f, df))
         Zf = Zf_sp.toarray()[0] if hasattr(Zf_sp, "toarray") else np.asarray(Zf_sp)[0]
 
-        # features texte normalisées dans [0,1] (shape = (n_items, 2))
-        T = text_features01(df, f, sent_model, k=PROXY_K)
+        T0 = text_features01(df, f, SENT_MODEL, k=PROXY_K)
 
-        # features item+form (shape = (n_items, d+2))
-        Xq = pair_features(Zf, X_items, T)
+        Xq = pair_features(Zf, X_items, T0).astype(np.float32)
 
-        # gains proxy (utilisés aussi côté pointwise)
         H_no_text = {
-            'price':   h_price_vector_simple(df, f),
-            'rating':  h_rating_vector(df),
-            'city':    h_city_vector(df, f),
+            'price'  : h_price_vector_simple(df, f),
+            'rating' : h_rating_vector(df),
+            'city'   : h_city_vector(df, f),
             'options': h_opts_vector(df, f),
-            'open':    h_open_vector(df, f, unknown_value=1.0),
+            'open'   : h_open_vector(df, f, unknown_value=1.0),
         }
-        text_proxy = PROXY_W_REV * T[:, 1] + (1.0 - PROXY_W_REV) * T[:, 0]
+        text_proxy = PROXY_W_REV * T0[:, 1] + (1.0 - PROXY_W_REV) * T0[:, 0]
         gains = aggregate_gains({**H_no_text, 'text': text_proxy}, W)
 
-        # indices top/bottom (on borne par n_items)
-        k_top = min(top_m, n_items)
-        k_bot = min(bot_m, n_items)
-        top_idx = np.argsort(gains)[::-1][:k_top]
-        bot_idx = np.argsort(gains)[:k_bot]
+        order = np.argsort(gains)
+        pos_idx = order[::-1][:min(top_m, n_items)]
+        neg_idx = order[:min(bot_m, n_items)]
 
-        # paires i (top) > j (bottom) avec marge positive
-        for i in top_idx:
-            for j in bot_idx:
-                if i == j: 
+        # 5) paires exactes: Xq[ip] - Xq[ineg]
+        for ip in pos_idx:
+            for ineg in neg_idx[:MAX_NEG_PER_POS]:
+                w = float(gains[ip] - gains[ineg])
+                if abs(w) <= EPS:
                     continue
-                if gains[i] <= gains[j]:
-                    continue
-                pairs_X.append((Xq[i] - Xq[j]).astype(np.float32))
-                pairs_y.append(1)
-                pairs_w.append(float(abs(gains[i] - gains[j]) + 1e-3))
+                X_pairs.append(Xq[ip] - Xq[ineg])
+                w_pairs.append(w)
 
-    if not pairs_X:
-        # Jamais None : tableaux vides mais typés
-        return (np.zeros((0, d + 2), dtype=np.float32),
-                np.zeros((0,), dtype=np.int32),
-                np.zeros((0,), dtype=np.float32))
-
-    Xp = np.asarray(pairs_X, dtype=np.float32)
-    yp = np.asarray(pairs_y, dtype=np.int32)
-    wp = np.asarray(pairs_w, dtype=np.float32)
+    Xp = np.vstack(X_pairs).astype(np.float32)
+    yp = np.ones((Xp.shape[0],), dtype=np.int8)
+    wp = np.asarray(w_pairs, dtype=float)
     return Xp, yp, wp
 
 def gains_to_labels_per_query(gains: np.ndarray, q=(0.50, 0.75, 0.90)) -> np.ndarray:
