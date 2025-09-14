@@ -65,4 +65,11 @@ Pour que tout fonctionne plusieurs étape sont à prévoir :
 L'API est accessible au port 8001
 Le client au port 8501
 Mlflow au port 5001
-    
+
+
+Pour entrainer l'IA il suffit de se rendre dans le projet cloner puis dans le dossier API puis entrainement :
+    Faite la commande python -m benchmark_3.py --mode train (pour entrainer)
+    Faite la commande python -m benchmark_3.py --mode param (pour un gridsearch/benchmark/entrainer)
+
+Un dossier artifacts contenant les resultats sera alors créeer, pour utiliser le modèle entrainer déplacer le (ainsi que preproc)
+vers le dossier artifacts deja present et supprimer celui créer.
