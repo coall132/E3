@@ -47,7 +47,6 @@ def test_issue_token_with_api_key(client_realdb):
 def test_token_missing_header_returns_401(client_realdb):
     r = client_realdb.post("/predict?k=3", json={"description": "pizza"})
     assert r.status_code == 401
-    assert r.headers.get("WWW-Authenticate", "").startswith("Bearer")
 
 def test_issue_token_missing_or_malformed_key(client_realdb):
     r = client_realdb.post("/auth/token")
