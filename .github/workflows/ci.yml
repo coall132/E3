@@ -84,7 +84,7 @@ jobs:
         run: pytest -q client/tests/test_streamlit.py
 
   build-and-push:
-    needs: [tests-api, tests-client-e2e]
+    needs: [tests-api, tests-client]
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     permissions:
