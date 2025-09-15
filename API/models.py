@@ -61,6 +61,7 @@ class Prediction(Base):
     model_version = Column(Text, nullable=False)
     latency_ms = Column(Integer)
     status = Column(Text, default="ok")
+    created_at = Column(TIMESTAMP(timezone=True), server_default=func.now())
 
     form = relationship("FormDB", back_populates="predictions")
     items = relationship("PredictionItem", back_populates="prediction", cascade="all, delete-orphan")
