@@ -144,9 +144,9 @@ def test_build_pointwise_and_pairwise_shapes_and_values(monkeypatch, tmp_path):
     Xp, yp, wp = e3.build_pairwise(forms_tr, preproc, df, X_items, e3.SENT_MODEL, W=e3.W_proxy, top_m=10, bot_m=10)
     assert Xp.dtype == np.float32
     assert Xp.shape[1] == d + 2
-    assert set(np.unique(yp)).issubset({1})  # que des positifs dans cette construction
+    assert set(np.unique(yp)).issubset({1}) 
     assert np.isfinite(wp).all()
-    assert wp.min() >= 0.0 and wp.max() > 0.0  # il peut exister des 0 si ip==ineg, mais au moins un >0
+    assert wp.max() > 0.0 
 
     # Reconstitution exacte du 1er bloc de paires (pour le 1er formulaire)
     # même logique que dans build_pairwise

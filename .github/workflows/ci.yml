@@ -37,7 +37,7 @@ jobs:
           E3_FAST_TEST: "1"
         run: pytest -q
         
-  tests-client-e2e:
+  tests-client:
     needs: tests-api
     runs-on: ubuntu-latest
     permissions: { contents: read }
